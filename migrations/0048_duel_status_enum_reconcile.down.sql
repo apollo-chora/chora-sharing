@@ -1,0 +1,2 @@
+-- Cannot remove enum values in PostgreSQL. Down is a no-op.
+-- To fully revert, recreate the type without the added values.

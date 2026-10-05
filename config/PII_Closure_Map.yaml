@@ -1,0 +1,195 @@
+# PII_Closure_Map for chora-sharing domain.
+#
+# Source-of-truth: docs/chora-sharing.md §12 (greenfield build spec).
+# Owning team: Team 1 (Content). Owning DB: chora_sharing.
+#
+# chora-sharing pseudonymises (tokenise) GCID columns + retains amounts /
+# scores / ratings (financial + historical integrity — FR-029/SC-011).
+# NEVER hard-delete except crypto-shred at closure.
+#
+# Strategy legend:
+#   tokenize         — replace GCID with a tokenised UUID; DEK-wrapped mapping
+#                      retained for crypto-shred on closure.
+#   drop             — set to empty string / NULL (user's words are theirs to
+#                      take when they leave).
+#   tombstone_string — replace with a static placeholder string.
+
+domain: chora_sharing
+version: "2.0"
+
+show_authorship_as: "Former member"
+
+fields_to_tokenize:
+  # --- Social graph ---
+  - table: social_follows
+    columns:
+      - column: follower_gcid
+        strategy: tokenize
+        value: ""
+      - column: followee_gcid
+        strategy: tokenize
+        value: ""
+
+  # Block edges (0031, ADR-229 WS-0) — both sides are PII; either side's
+  # closure pseudonymises their column.
+  - table: social_blocks
+    columns:
+      - column: blocker_gcid
+        strategy: tokenize
+        value: ""
+      - column: blocked_gcid
+        strategy: tokenize
+        value: ""
+
+  # Friend requests + friendships (0032, ADR-230 B-lite.1) — relationship
+  # state is behavioural PII; both sides tokenize on either side's closure.
+  - table: social_friend_requests
+    columns:
+      - column: requester_gcid
+        strategy: tokenize
+        value: ""
+      - column: addressee_gcid
+        strategy: tokenize
+        value: ""
+
+  - table: social_friendships
+    columns:
+      - column: member_lo_gcid
+        strategy: tokenize
+        value: ""
+      - column: member_hi_gcid
+        strategy: tokenize
+        value: ""
+
+  - table: social_feed_entries
+    columns:
+      - column: actor_gcid
+        strategy: tokenize
+        value: ""
+
+  - table: social_feed_reactions
+    columns:
+      - column: reactor_gcid
+        strategy: tokenize
+        value: ""
+
+  # --- Comments ---
+  - table: post_comments
+    columns:
+      - column: author_gcid
+        strategy: tokenize
+        value: ""
+      - column: body
+        strategy: drop
+        value: ""
+
+  # --- Duels (retain scores/ratings — other player's history) ---
+  - table: duel_sessions
+    columns:
+      - column: challenger_gcid
+        strategy: tokenize
+        value: ""
+      - column: opponent_gcid
+        strategy: tokenize
+        value: ""
+      - column: winner_gcid
+        strategy: tokenize
+        value: ""
+
+  - table: duel_rounds
+    columns:
+      - column: winner_gcid
+        strategy: tokenize
+        value: ""
+
+  - table: duel_ratings
+    columns:
+      - column: gcid
+        strategy: tokenize
+        value: ""
+      # RETAIN rating/wins/losses — the ranked-duel metric stays for the
+      # leaderboard's historical integrity; display_name is pseudonymised at
+      # the read-model layer (FR-029/SC-011), not here.
+
+  - table: duel_match_history
+    columns:
+      - column: winner_gcid
+        strategy: tokenize
+        value: ""
+      - column: loser_gcid
+        strategy: tokenize
+        value: ""
+      # RETAIN rating deltas — audit trail integrity.
+
+  # --- Atom Usage Grants (the licensing record — dispute-proof audit) ---
+  - table: atom_usage_grants
+    columns:
+      - column: owner_gcid
+        strategy: tokenize
+        value: ""
+      - column: grantee_gcid
+        strategy: tokenize
+        value: ""
+      # RETAIN frozen license snapshot — dispute-proof audit trail (R2).
+
+  - table: atom_share_events
+    columns:
+      - column: actor_gcid
+        strategy: tokenize
+        value: ""
+
+  - table: grant_events
+    columns:
+      - column: actor_gcid
+        strategy: tokenize
+        value: ""
+
+  # --- Royalty (retain amounts — financial record) ---
+  - table: royalty_settlements
+    columns:
+      - column: owner_gcid
+        strategy: tokenize
+        value: ""
+      # grantee_tenant_id intentionally omitted — organisational, not personal.
+      # RETAIN amount — closure never zeroes earnings (FR-029/SC-011).
+
+  # --- Currency (retain balance) ---
+  - table: currency_balances
+    columns:
+      - column: holder_gcid
+        strategy: tokenize
+        value: ""
+      # RETAIN balance — financial record.
+
+  # --- XP projection (retain xp) ---
+  - table: atom_xp_credits
+    columns:
+      - column: gcid
+        strategy: tokenize
+        value: ""
+      # RETAIN xp — leaderboard historical integrity; deleted_at is for
+      # closure crypto-shred only.
+
+  # --- Atom projection (retain atom content) ---
+  - table: atom_projections
+    columns:
+      - column: owner_gcid
+        strategy: tokenize
+        value: ""
+      - column: author_display_name
+        strategy: tombstone_string
+        value: "Former member"
+      # RETAIN atom content (stem, question_type) — the atom is owned by
+      # chora_creation; only the attribution snapshot is pseudonymised.
+
+retention_days_by_jurisdiction:
+  EU: 2557
+  SG: 2557
+  US: 1826
+  ZA: 1826
+  BR: 1826
+  default: 2557
+
+on_creator_closure:
+  strategy: tokenise_authorship_keep_atom
+  show_authorship_as: "Former member"

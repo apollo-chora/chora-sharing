@@ -1,0 +1,77 @@
+# Familiar milestone share-post templates (ADR-149 Iter G.7).
+#
+# Loaded at boot by chora-sharing/cmd/server/main.go via
+# internal/domain/post_template.LoadFromBytes. The fallback at boot is
+# post_template.DefaultTemplates() which holds the same canonical copy
+# embedded in source.
+#
+# ⚠ THIS FILE AND DefaultTemplates() MUST STAY BYTE-IDENTICAL.
+# They are two copies of one thing. CHORA_FAMILIAR_TEMPLATES_PATH is UNSET in
+# prod today, so the EMBEDDED defaults are what renders and this file is inert —
+# which is exactly how it would rot unnoticed and then resurrect the CHO-2259
+# copy defects the day ops mounts it. templates_parity_test.go reads this file
+# from disk and fails the build if the two disagree.
+#
+# Per `feedback_no_inline_config`: the cmd/server wiring resolves the path
+# from env (CHORA_FAMILIAR_TEMPLATES_PATH) so ops can override per
+# environment without a rebuild. If env unset and the file is missing the
+# defaults take over.
+#
+# ⚠ COMPOSE ONLY FROM FIELDS THE EVENT CARRIES (CHO-2259).
+# familiar.proto carries familiar_display_name on stage_up (13) and
+# source_revelation (9) since CHO-2266 (denormalised at publish time), plus
+# FamiliarHatched.display_name (4). It has NO owner_display_name, breed_adjective,
+# stage_6_adjective, breed_themed_effect or stage_3_form on any milestone message,
+# and NO name on breed_revealed (which fires before the pod is named). Templates
+# written against the old
+# "+ FamiliarInstance snapshot joined client-side" doc printed
+# "Their friend's Your Familiar grew — they reached fledgling Companion!" to real
+# learners, and source_revelation could not render at all (100% NACK). The
+# FamiliarInstance join cannot be built: it lives in chora_consumption and
+# cross-DB queries are forbidden. A new placeholder here needs a proto field
+# first.
+#
+# Voice: FIRST PERSON. The draft is composed FOR THE OWNER and the C+ feed
+# renders it beneath the owner's own name, so "My Familiar" reads correctly both
+# in the draft preview and in the published post. Never "Their friend's" (third
+# person about the author, on the author's own post) and never "Your Familiar"
+# (addresses the reader).
+#
+# Curiosity-first copy rules (HANDOFF_FE_FAMILIAR_GROWTH §4):
+#   - Use "grew" / "stage up" / "matured" / "reached"
+#   - NEVER use "level up" / "loot" / "rare drop" / "premium content"
+#
+# Template syntax: Go text/template. Available helpers:
+#   {{ joinList .Items ", " }}            → comma-join a []string
+#   {{ countItems .Items }}               → integer length of []string
+#   {{ familiarName .FamiliarDisplayName }} → the name, or "My Familiar"
+#   {{ speciesPhrase .Rarity .Species }}    → "a common fox" (never "a common ")
+
+stage_up: |-
+  {{ familiarName .FamiliarDisplayName }} grew — they reached {{.StageToName}}!
+
+  {{- if .NewlyUnlockedTools }}
+  They learned: {{ joinList .NewlyUnlockedTools ", " }}.
+  {{- end }}
+  {{- if .NewlyRevealedKgNeighbors }}
+  New territory came into view: {{ countItems .NewlyRevealedKgNeighbors }} fresh atom(s) joined their reach.
+  {{- end }}
+
+  Walk with them.
+
+breed_reveal: |-
+  {{- if .FamiliarDisplayName }}Meet {{.FamiliarDisplayName}} — {{ speciesPhrase .Rarity .Species }}{{ if .ShinyVariant }} with a shiny shimmer{{ end }}!
+  {{- else }}A fated companion has come into the world — {{ speciesPhrase .Rarity .Species }}{{ if .ShinyVariant }} with a shiny shimmer{{ end }}!
+  {{- end }}
+
+  {{ if .FamiliarDisplayName }}{{.FamiliarDisplayName}} and I are{{ else }}We are{{ end }} walking together now.
+
+source_revelation: |-
+  {{ familiarName .FamiliarDisplayName }} paused. For a heartbeat, I glimpsed what they will one day become.
+
+  The vision faded. They returned as they were — but their eyes carry the memory.
+  {{- if .PreviewTools }}
+  *For a short while, they can draw on the wisdom of their future self: {{ joinList .PreviewTools ", " }}.*
+  {{- else }}
+  *For a short while, they can draw on the wisdom of their future self.*
+  {{- end }}
