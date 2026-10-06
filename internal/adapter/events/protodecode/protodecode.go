@@ -6,9 +6,11 @@
 // -----------------------
 // Producer-side wave (task #33 / #38) flipped chora-sharing outbox payloads
 // to binary protobuf — the canonical wire shape on the event bus. The four
-// chora.consumption.familiar.{stage_up, breed_revealed, hatched,
-// source_revelation}.v1 topics chora-sharing subscribes to are CANDIDATES for
-// the same flip on the chora-consumption side. Subscribers that previously
+// milestone events chora-sharing subscribes to — the canonical
+// chora.consumption.companion.{stage_up, breed_revealed, hatched,
+// source_revelation}.v1 subjects (ADR-254) plus the legacy familiar.* set —
+// are CANDIDATES for the same flip on the chora-consumption side, and the
+// companion.* set has already flipped. Subscribers that previously
 // used `json.Unmarshal(msg.Data, &m)` now MUST accept binary bytes —
 // `json: cannot unmarshal …` is the failure mode at runtime once the
 // producer flips.
@@ -93,6 +95,51 @@ var binaryDecoders = map[string]struct {
 		project: projectFamiliarHatched,
 	},
 	"chora.consumption.familiar.source_revelation.v1": {
+		decode: func(payload []byte) (proto.Message, error) {
+			var m consumptionv1.CompanionSourceRevelation
+			if err := proto.Unmarshal(payload, &m); err != nil {
+				return nil, err
+			}
+			return &m, nil
+		},
+		project: projectFamiliarSourceRevelation,
+	},
+	// Canonical ADR-254 subjects — chora-consumption emits ONLY these today.
+	// Same proto messages as the familiar.* entries above (the generated types
+	// were always companion-named); only the subject keys differ. Without these
+	// entries the first live companion.* message would NACK-loop on the JSON
+	// fallback — the exact failure the creation.atom entries document above.
+	"chora.consumption.companion.stage_up.v1": {
+		decode: func(payload []byte) (proto.Message, error) {
+			var m consumptionv1.CompanionStageUp
+			if err := proto.Unmarshal(payload, &m); err != nil {
+				return nil, err
+			}
+			return &m, nil
+		},
+		project: projectFamiliarStageUp,
+	},
+	"chora.consumption.companion.breed_revealed.v1": {
+		decode: func(payload []byte) (proto.Message, error) {
+			var m consumptionv1.CompanionBreedRevealed
+			if err := proto.Unmarshal(payload, &m); err != nil {
+				return nil, err
+			}
+			return &m, nil
+		},
+		project: projectFamiliarBreedRevealed,
+	},
+	"chora.consumption.companion.hatched.v1": {
+		decode: func(payload []byte) (proto.Message, error) {
+			var m consumptionv1.CompanionHatched
+			if err := proto.Unmarshal(payload, &m); err != nil {
+				return nil, err
+			}
+			return &m, nil
+		},
+		project: projectFamiliarHatched,
+	},
+	"chora.consumption.companion.source_revelation.v1": {
 		decode: func(payload []byte) (proto.Message, error) {
 			var m consumptionv1.CompanionSourceRevelation
 			if err := proto.Unmarshal(payload, &m); err != nil {

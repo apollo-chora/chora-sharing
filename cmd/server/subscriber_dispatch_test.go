@@ -74,6 +74,10 @@ func TestRegisterMilestoneSubscriber_DeliversAllTopics(t *testing.T) {
 	registerMilestoneSubscriber(context.Background(), bus, wiredFamiliarSub(t))
 
 	payloads := map[string]string{
+		subscribers.TopicCompanionStageUp:          `{"familiar_id":"fam-1","stage_to_name":"Stage 4"}`,
+		subscribers.TopicCompanionBreedRevealed:    `{"familiar_id":"fam-1","species":"fox"}`,
+		subscribers.TopicCompanionHatched:          `{"familiar_id":"fam-1","display_name":"Foxy"}`,
+		subscribers.TopicCompanionSourceRevelation: `{"familiar_id":"fam-1","preview_llm_tier":"t2"}`,
 		subscribers.TopicFamiliarStageUp:          `{"familiar_id":"fam-1","stage_to_name":"Stage 4"}`,
 		subscribers.TopicFamiliarBreedRevealed:    `{"familiar_id":"fam-1","species":"fox"}`,
 		subscribers.TopicFamiliarHatched:          `{"familiar_id":"fam-1","display_name":"Foxy"}`,
@@ -125,6 +129,10 @@ func TestBuildFamiliarMilestoneHandler_SuccessPaths(t *testing.T) {
 		topic   string
 		payload string
 	}{
+		{subscribers.TopicCompanionStageUp, `{"familiar_id":"fam-1","stage_to_name":"Stage 4"}`},
+		{subscribers.TopicCompanionBreedRevealed, `{"familiar_id":"fam-1","species":"fox"}`},
+		{subscribers.TopicCompanionHatched, `{"familiar_id":"fam-1","display_name":"Foxy"}`},
+		{subscribers.TopicCompanionSourceRevelation, `{"familiar_id":"fam-1","preview_llm_tier":"t2"}`},
 		{subscribers.TopicFamiliarStageUp, `{"familiar_id":"fam-1","stage_to_name":"Stage 4"}`},
 		{subscribers.TopicFamiliarBreedRevealed, `{"familiar_id":"fam-1","species":"fox"}`},
 		{subscribers.TopicFamiliarHatched, `{"familiar_id":"fam-1","display_name":"Foxy"}`},
@@ -222,6 +230,10 @@ func TestRegisterBusSubscribers_DecodeErrorPaths(t *testing.T) {
 		subscribers.NewDuelCompletedSubscriber(subscribers.DuelCompletedConfig{}))
 
 	topics := []string{
+		subscribers.TopicCompanionStageUp,
+		subscribers.TopicCompanionBreedRevealed,
+		subscribers.TopicCompanionHatched,
+		subscribers.TopicCompanionSourceRevelation,
 		subscribers.TopicFamiliarStageUp,
 		subscribers.TopicFamiliarBreedRevealed,
 		subscribers.TopicFamiliarHatched,
@@ -244,6 +256,9 @@ func TestBuildHandlers_RemainingDecodeErrorPaths(t *testing.T) {
 
 	fam := wiredFamiliarSub(t)
 	for _, topic := range []string{
+		subscribers.TopicCompanionBreedRevealed,
+		subscribers.TopicCompanionHatched,
+		subscribers.TopicCompanionSourceRevelation,
 		subscribers.TopicFamiliarBreedRevealed,
 		subscribers.TopicFamiliarHatched,
 		subscribers.TopicFamiliarSourceRevelation,

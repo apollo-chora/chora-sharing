@@ -92,9 +92,14 @@ import (
 	"github.com/apollo-chora/chora-sharing/internal/observability"
 )
 
-// registerMilestoneSubscriber binds the FamiliarMilestoneSubscriber's four
-// topic handlers onto the in-process bus. Each handler decodes the JSON
-// envelope payload and forwards to the typed Handle* method.
+// registerMilestoneSubscriber binds the FamiliarMilestoneSubscriber's topic
+// handlers onto the in-process bus. Each handler decodes the JSON envelope
+// payload and forwards to the typed Handle* method.
+//
+// Subscribes BOTH subject sets: the canonical companion.* subjects (ADR-254 —
+// what chora-consumption emits today) and the legacy familiar.* subjects (the
+// pre-ADR-254 names, kept so a mixed-version rollout still drafts). Both
+// dispatch to the same Handle* methods under the same handler ids.
 //
 // This is the DEV fallback; in production the durable JetStream consumers
 // (registerFamiliarMilestoneSubscriber) dispatch to the same Handle* methods.
@@ -104,9 +109,49 @@ func registerMilestoneSubscriber(ctx context.Context, bus *eventbus.InMemoryBus,
 		handler eventbus.Handler
 	}{
 		{
+			topic: subscribers.TopicCompanionStageUp,
+			handler: func(c context.Context, msg eventbus.Message) error {
+				env, err := subscribers.DecodeStageUpWithAttrs(subscribers.TopicCompanionStageUp, msg.Payload, attrsFromBusEnvelope(msg))
+				if err != nil {
+					return err
+				}
+				return sub.HandleStageUp(c, env)
+			},
+		},
+		{
+			topic: subscribers.TopicCompanionBreedRevealed,
+			handler: func(c context.Context, msg eventbus.Message) error {
+				env, err := subscribers.DecodeBreedRevealedWithAttrs(subscribers.TopicCompanionBreedRevealed, msg.Payload, attrsFromBusEnvelope(msg))
+				if err != nil {
+					return err
+				}
+				return sub.HandleBreedRevealed(c, env)
+			},
+		},
+		{
+			topic: subscribers.TopicCompanionHatched,
+			handler: func(c context.Context, msg eventbus.Message) error {
+				env, err := subscribers.DecodeHatchedWithAttrs(subscribers.TopicCompanionHatched, msg.Payload, attrsFromBusEnvelope(msg))
+				if err != nil {
+					return err
+				}
+				return sub.HandleHatched(c, env)
+			},
+		},
+		{
+			topic: subscribers.TopicCompanionSourceRevelation,
+			handler: func(c context.Context, msg eventbus.Message) error {
+				env, err := subscribers.DecodeSourceRevelationWithAttrs(subscribers.TopicCompanionSourceRevelation, msg.Payload, attrsFromBusEnvelope(msg))
+				if err != nil {
+					return err
+				}
+				return sub.HandleSourceRevelation(c, env)
+			},
+		},
+		{
 			topic: subscribers.TopicFamiliarStageUp,
 			handler: func(c context.Context, msg eventbus.Message) error {
-				env, err := subscribers.DecodeStageUpWithAttrs(msg.Payload, attrsFromBusEnvelope(msg))
+				env, err := subscribers.DecodeStageUpWithAttrs(subscribers.TopicFamiliarStageUp, msg.Payload, attrsFromBusEnvelope(msg))
 				if err != nil {
 					return err
 				}
@@ -116,7 +161,7 @@ func registerMilestoneSubscriber(ctx context.Context, bus *eventbus.InMemoryBus,
 		{
 			topic: subscribers.TopicFamiliarBreedRevealed,
 			handler: func(c context.Context, msg eventbus.Message) error {
-				env, err := subscribers.DecodeBreedRevealedWithAttrs(msg.Payload, attrsFromBusEnvelope(msg))
+				env, err := subscribers.DecodeBreedRevealedWithAttrs(subscribers.TopicFamiliarBreedRevealed, msg.Payload, attrsFromBusEnvelope(msg))
 				if err != nil {
 					return err
 				}
@@ -126,7 +171,7 @@ func registerMilestoneSubscriber(ctx context.Context, bus *eventbus.InMemoryBus,
 		{
 			topic: subscribers.TopicFamiliarHatched,
 			handler: func(c context.Context, msg eventbus.Message) error {
-				env, err := subscribers.DecodeHatchedWithAttrs(msg.Payload, attrsFromBusEnvelope(msg))
+				env, err := subscribers.DecodeHatchedWithAttrs(subscribers.TopicFamiliarHatched, msg.Payload, attrsFromBusEnvelope(msg))
 				if err != nil {
 					return err
 				}
@@ -136,7 +181,7 @@ func registerMilestoneSubscriber(ctx context.Context, bus *eventbus.InMemoryBus,
 		{
 			topic: subscribers.TopicFamiliarSourceRevelation,
 			handler: func(c context.Context, msg eventbus.Message) error {
-				env, err := subscribers.DecodeSourceRevelationWithAttrs(msg.Payload, attrsFromBusEnvelope(msg))
+				env, err := subscribers.DecodeSourceRevelationWithAttrs(subscribers.TopicFamiliarSourceRevelation, msg.Payload, attrsFromBusEnvelope(msg))
 				if err != nil {
 					return err
 				}
@@ -739,10 +784,12 @@ func main() {
 	// post_drafts / user_preferences / subscriber_idempotency + posts +
 	// sharing_outbox_events, migrations 0039-0041), and fall back to the
 	// in-memory stores created above in dev. A Cloud PULL receiver
-	// (registerFamiliarMilestoneSubscriber) subscribes to the four live
-	// chora.consumption.familiar.*.v1 topics when a real Pub/Sub client is
-	// wired; only in dev (no pubsub client) does it fall back to the
-	// in-process bus binding. This REPLACES the dead in-memory-only lane.
+	// (registerFamiliarMilestoneSubscriber) subscribes to the live milestone
+	// topics when a real Pub/Sub client is wired — the canonical
+	// chora.consumption.companion.*.v1 set (ADR-254) PLUS the legacy
+	// chora.consumption.familiar.*.v1 set for the mixed-version window; only
+	// in dev (no pubsub client) does it fall back to the in-process bus
+	// binding. This REPLACES the dead in-memory-only lane.
 	// ----------------------------------------------------------------------
 	var (
 		milestoneDraftStore subscribers.DraftStore       = milestoneDrafts

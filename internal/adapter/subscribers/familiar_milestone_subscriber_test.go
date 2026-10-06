@@ -300,14 +300,18 @@ func TestSourceRevelation_DraftPolicy_QueuesCeremonyDraft(t *testing.T) {
 // Subscriber wiring
 // -----------------------------------------------------------------------------
 
-func TestSubscribedTopics_AllFour(t *testing.T) {
+func TestSubscribedTopics_AllEight(t *testing.T) {
 	t.Parallel()
 	sub, _, _, _, _ := newSubscriber(t)
 	topics := sub.SubscribedTopics()
-	if len(topics) != 4 {
-		t.Fatalf("expected 4 topics; got %d (%v)", len(topics), topics)
+	if len(topics) != 8 {
+		t.Fatalf("expected 8 topics; got %d (%v)", len(topics), topics)
 	}
 	wantSet := map[string]bool{
+		subscribers.TopicCompanionStageUp:          true,
+		subscribers.TopicCompanionBreedRevealed:    true,
+		subscribers.TopicCompanionHatched:          true,
+		subscribers.TopicCompanionSourceRevelation: true,
 		subscribers.TopicFamiliarStageUp:          true,
 		subscribers.TopicFamiliarBreedRevealed:    true,
 		subscribers.TopicFamiliarHatched:          true,
@@ -354,7 +358,7 @@ func TestDecodeStageUpJSON_ParsesContract(t *testing.T) {
 		"new_llm_tier": "pro",
 		"new_memory_mode": "full-procedural"
 	}`)
-	got, err := subscribers.DecodeStageUpWithAttrs(blob, nil)
+	got, err := subscribers.DecodeStageUpWithAttrs(subscribers.TopicFamiliarStageUp, blob, nil)
 	if err != nil {
 		t.Fatalf("DecodeStageUpWithAttrs: %v", err)
 	}
@@ -363,6 +367,35 @@ func TestDecodeStageUpJSON_ParsesContract(t *testing.T) {
 	}
 	if got.NewLLMTier != "pro" {
 		t.Fatalf("new_llm_tier: %q", got.NewLLMTier)
+	}
+}
+
+// TestDecode_CompanionTopics_ParseContract — ADR-254: the canonical
+// chora.consumption.companion.* subjects carry the same envelope as the legacy
+// familiar.* ones; the decoders must accept both (the topic selects the
+// binary-proto mapping inside protodecode).
+func TestDecode_CompanionTopics_ParseContract(t *testing.T) {
+	t.Parallel()
+	blob := []byte(`{
+		"familiar_id": "01970000-0000-7000-8000-000000000111",
+		"owner_gcid": "` + gcidA + `",
+		"tenant_id": "` + tenantA + `",
+		"event_id": "` + eventB + `",
+		"stage_from": 5,
+		"stage_to": 6,
+		"stage_from_name": "Teen",
+		"stage_to_name": "Matured",
+		"newly_unlocked_tools": ["propose_kg_merge"],
+		"newly_revealed_kg_neighbors": [],
+		"new_llm_tier": "pro",
+		"new_memory_mode": "full-procedural"
+	}`)
+	got, err := subscribers.DecodeStageUpWithAttrs(subscribers.TopicCompanionStageUp, blob, nil)
+	if err != nil {
+		t.Fatalf("DecodeStageUpWithAttrs(companion): %v", err)
+	}
+	if got.StageToName != "Matured" || got.NewLLMTier != "pro" {
+		t.Fatalf("companion stage_up decode mismatch: %+v", got)
 	}
 }
 
@@ -708,7 +741,7 @@ func TestDecodeBreedRevealed_ParsesContract(t *testing.T) {
 		"egg_sku": "egg.standard.v1",
 		"rolled_probability": 25.0
 	}`)
-	got, err := subscribers.DecodeBreedRevealedWithAttrs(blob, nil)
+	got, err := subscribers.DecodeBreedRevealedWithAttrs(subscribers.TopicFamiliarBreedRevealed, blob, nil)
 	if err != nil {
 		t.Fatalf("DecodeBreedRevealedWithAttrs: %v", err)
 	}
@@ -732,7 +765,7 @@ func TestDecodeHatched_ParsesContract(t *testing.T) {
 		"tone": "socratic",
 		"learner_persona": "curious-explorer"
 	}`)
-	got, err := subscribers.DecodeHatchedWithAttrs(blob, nil)
+	got, err := subscribers.DecodeHatchedWithAttrs(subscribers.TopicFamiliarHatched, blob, nil)
 	if err != nil {
 		t.Fatalf("DecodeHatchedWithAttrs: %v", err)
 	}
@@ -759,7 +792,7 @@ func TestDecodeSourceRevelation_ParsesContract(t *testing.T) {
 		"preview_tools": ["query_kg", "score_atom_for_learner"],
 		"preview_llm_tier": "pro"
 	}`)
-	got, err := subscribers.DecodeSourceRevelationWithAttrs(blob, nil)
+	got, err := subscribers.DecodeSourceRevelationWithAttrs(subscribers.TopicFamiliarSourceRevelation, blob, nil)
 	if err != nil {
 		t.Fatalf("DecodeSourceRevelationWithAttrs: %v", err)
 	}
@@ -778,19 +811,19 @@ func TestDecode_RejectsMalformedJSON(t *testing.T) {
 	t.Parallel()
 	for name, fn := range map[string]func([]byte) error{
 		"stage_up": func(b []byte) error {
-			_, err := subscribers.DecodeStageUpWithAttrs(b, nil)
+			_, err := subscribers.DecodeStageUpWithAttrs(subscribers.TopicFamiliarStageUp, b, nil)
 			return err
 		},
 		"breed_revealed": func(b []byte) error {
-			_, err := subscribers.DecodeBreedRevealedWithAttrs(b, nil)
+			_, err := subscribers.DecodeBreedRevealedWithAttrs(subscribers.TopicFamiliarBreedRevealed, b, nil)
 			return err
 		},
 		"hatched": func(b []byte) error {
-			_, err := subscribers.DecodeHatchedWithAttrs(b, nil)
+			_, err := subscribers.DecodeHatchedWithAttrs(subscribers.TopicFamiliarHatched, b, nil)
 			return err
 		},
 		"source_revelation": func(b []byte) error {
-			_, err := subscribers.DecodeSourceRevelationWithAttrs(b, nil)
+			_, err := subscribers.DecodeSourceRevelationWithAttrs(subscribers.TopicFamiliarSourceRevelation, b, nil)
 			return err
 		},
 	} {

@@ -48,11 +48,11 @@ func TestRegisterAtomProjectionSubscriber_NilGuards(t *testing.T) {
 	}
 }
 
-func TestRegisterMilestoneSubscriber_BindsFourTopics(t *testing.T) {
+func TestRegisterMilestoneSubscriber_BindsAllTopics(t *testing.T) {
 	bus := eventbus.NewInMemoryBus()
 	sub := subscribers.NewFamiliarMilestoneSubscriber(subscribers.Config{})
 	registerMilestoneSubscriber(context.Background(), bus, sub)
-	// No assertion beyond no-panic: the four Subscribe calls + log are the
+	// No assertion beyond no-panic: the Subscribe calls + log are the
 	// unit under test; handlers only run when a message is published.
 }
 

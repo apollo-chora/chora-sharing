@@ -66,6 +66,81 @@ func TestDecode_FamiliarStageUp_Binary(t *testing.T) {
 	}
 }
 
+// TestDecode_CompanionTopics_Binary (ADR-254) — chora-consumption emits ONLY
+// the canonical chora.consumption.companion.* subjects; each must binary-decode
+// (same proto messages as the familiar.* entries — only the subject keys
+// differ). Without registry entries these would NACK-loop on the JSON
+// fallback, the failure mode the creation.atom entries document above.
+func TestDecode_CompanionTopics_Binary(t *testing.T) {
+	t0 := time.Date(2026, 5, 16, 9, 30, 0, 0, time.UTC)
+	env := &commonv1.EventEnvelope{
+		EventId:       "01971a90-0000-7000-8000-000000000abc",
+		TenantId:      "tenant-acme",
+		Gcid:          "gcid-phyllis",
+		OccurredAt:    timestamppb.New(t0),
+		SchemaVersion: 1,
+	}
+	cases := []struct {
+		topic string
+		msg   proto.Message
+		key   string
+		want  string
+	}{
+		{
+			topic: "chora.consumption.companion.stage_up.v1",
+			msg: &consumptionv1.CompanionStageUp{
+				Envelope: env, CompanionId: "fam-1", OwnerGcid: "gcid-phyllis",
+				StageToName: "Teen", NewLlmTier: "flash",
+			},
+			key:  "stage_to_name",
+			want: "Teen",
+		},
+		{
+			topic: "chora.consumption.companion.breed_revealed.v1",
+			msg: &consumptionv1.CompanionBreedRevealed{
+				Envelope: env, CompanionId: "fam-1", OwnerGcid: "gcid-phyllis",
+				Rarity: "rare", EggSku: "egg.standard.v1",
+			},
+			key:  "rarity",
+			want: "rare",
+		},
+		{
+			topic: "chora.consumption.companion.hatched.v1",
+			msg: &consumptionv1.CompanionHatched{
+				Envelope: env, CompanionId: "fam-1", OwnerGcid: "gcid-phyllis",
+				DisplayName: "Eira", Tone: "socratic",
+			},
+			key:  "display_name",
+			want: "Eira",
+		},
+		{
+			topic: "chora.consumption.companion.source_revelation.v1",
+			msg: &consumptionv1.CompanionSourceRevelation{
+				Envelope: env, CompanionId: "fam-1", OwnerGcid: "gcid-phyllis",
+				PreviewLlmTier: "pro",
+			},
+			key:  "preview_llm_tier",
+			want: "pro",
+		},
+	}
+	for _, c := range cases {
+		bz, err := proto.Marshal(c.msg)
+		if err != nil {
+			t.Fatalf("proto.Marshal(%s): %v", c.topic, err)
+		}
+		got, err := protodecode.DecodePayloadMap(c.topic, bz)
+		if err != nil {
+			t.Fatalf("DecodePayloadMap(%s) binary: %v", c.topic, err)
+		}
+		if v, _ := got[c.key].(string); v != c.want {
+			t.Errorf("%s: %s = %q, want %q", c.topic, c.key, v, c.want)
+		}
+		if v, _ := got["event_id"].(string); v != env.EventId {
+			t.Errorf("%s: event_id = %q, want envelope-sourced UUID", c.topic, v)
+		}
+	}
+}
+
 // TestDecode_FamiliarStageUp_JSON exercises the JSON fallback (current
 // producer shape until the protomarshal flip).
 func TestDecode_FamiliarStageUp_JSON(t *testing.T) {

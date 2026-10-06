@@ -3,12 +3,18 @@
 //
 // FamiliarMilestoneSubscriber (PROD-G, ADR-149 Iter G.7) consumes 4 events
 // from the Content Consumption domain and queues / auto-publishes
-// shareable C+ posts:
+// shareable C+ posts. ADR-254 renamed the wire subjects familiar→companion;
+// chora-consumption now emits the canonical companion.* set, and the legacy
+// familiar.* set is still subscribed for the compatibility window:
 //
-//	chora.consumption.familiar.stage_up.v1
-//	chora.consumption.familiar.breed_revealed.v1
-//	chora.consumption.familiar.hatched.v1
-//	chora.consumption.familiar.source_revelation.v1
+//	chora.consumption.companion.stage_up.v1          (canonical, ADR-254)
+//	chora.consumption.companion.breed_revealed.v1    (canonical, ADR-254)
+//	chora.consumption.companion.hatched.v1           (canonical, ADR-254)
+//	chora.consumption.companion.source_revelation.v1 (canonical, ADR-254)
+//	chora.consumption.familiar.stage_up.v1           (legacy, pre-ADR-254)
+//	chora.consumption.familiar.breed_revealed.v1     (legacy, pre-ADR-254)
+//	chora.consumption.familiar.hatched.v1            (legacy, pre-ADR-254)
+//	chora.consumption.familiar.source_revelation.v1  (legacy, pre-ADR-254)
 //
 // Per-user preference (chora_sharing.user_preferences) chooses one of:
 //
@@ -45,6 +51,16 @@ import (
 // -----------------------------------------------------------------------------
 
 const (
+	// Canonical milestone topics (ADR-254 — companion is the forward name;
+	// chora-consumption emits these).
+	TopicCompanionStageUp          = "chora.consumption.companion.stage_up.v1"
+	TopicCompanionBreedRevealed    = "chora.consumption.companion.breed_revealed.v1"
+	TopicCompanionHatched          = "chora.consumption.companion.hatched.v1"
+	TopicCompanionSourceRevelation = "chora.consumption.companion.source_revelation.v1"
+
+	// Legacy milestone topics (pre-ADR-254). Still subscribed so a
+	// mixed-version rollout (old consumption pod emitting familiar.*) keeps
+	// drafting during the window.
 	TopicFamiliarStageUp          = "chora.consumption.familiar.stage_up.v1"
 	TopicFamiliarBreedRevealed    = "chora.consumption.familiar.breed_revealed.v1"
 	TopicFamiliarHatched          = "chora.consumption.familiar.hatched.v1"
@@ -332,9 +348,15 @@ func NewFamiliarMilestoneSubscriber(cfg Config) *FamiliarMilestoneSubscriber {
 	return &FamiliarMilestoneSubscriber{cfg: cfg}
 }
 
-// SubscribedTopics returns the 4 topics this subscriber listens to.
+// SubscribedTopics returns the 8 topics this subscriber listens to: the 4
+// canonical companion.* subjects (ADR-254) plus the 4 legacy familiar.*
+// subjects kept for the mixed-version compatibility window.
 func (s *FamiliarMilestoneSubscriber) SubscribedTopics() []string {
 	return []string{
+		TopicCompanionStageUp,
+		TopicCompanionBreedRevealed,
+		TopicCompanionHatched,
+		TopicCompanionSourceRevelation,
 		TopicFamiliarStageUp,
 		TopicFamiliarBreedRevealed,
 		TopicFamiliarHatched,
@@ -346,7 +368,8 @@ func (s *FamiliarMilestoneSubscriber) SubscribedTopics() []string {
 // HandleStageUp
 // -----------------------------------------------------------------------------
 
-// HandleStageUp processes one chora.consumption.familiar.stage_up.v1 event.
+// HandleStageUp processes one stage_up.v1 event (companion.* canonical or
+// familiar.* legacy subject — same envelope, same handler id).
 func (s *FamiliarMilestoneSubscriber) HandleStageUp(ctx context.Context, e StageUpEnvelope) error {
 	if err := s.preflight(); err != nil {
 		return err
@@ -411,7 +434,8 @@ func (s *FamiliarMilestoneSubscriber) HandleStageUp(ctx context.Context, e Stage
 // HandleBreedRevealed
 // -----------------------------------------------------------------------------
 
-// HandleBreedRevealed processes one chora.consumption.familiar.breed_revealed.v1.
+// HandleBreedRevealed processes one breed_revealed.v1 (companion.* canonical
+// or familiar.* legacy subject).
 func (s *FamiliarMilestoneSubscriber) HandleBreedRevealed(ctx context.Context, e BreedRevealedEnvelope) error {
 	if err := s.preflight(); err != nil {
 		return err
@@ -475,7 +499,8 @@ func (s *FamiliarMilestoneSubscriber) HandleBreedRevealed(ctx context.Context, e
 // HandleHatched
 // -----------------------------------------------------------------------------
 
-// HandleHatched processes one chora.consumption.familiar.hatched.v1.
+// HandleHatched processes one hatched.v1 (companion.* canonical or
+// familiar.* legacy subject).
 //
 // Reuses the breed-reveal template — Hatched IS the social companion event
 // to BreedRevealed (they fire seconds apart at the hatching ceremony) and
@@ -541,7 +566,8 @@ func (s *FamiliarMilestoneSubscriber) HandleHatched(ctx context.Context, e Hatch
 // HandleSourceRevelation
 // -----------------------------------------------------------------------------
 
-// HandleSourceRevelation processes one chora.consumption.familiar.source_revelation.v1.
+// HandleSourceRevelation processes one source_revelation.v1 (companion.*
+// canonical or familiar.* legacy subject).
 func (s *FamiliarMilestoneSubscriber) HandleSourceRevelation(ctx context.Context, e SourceRevelationEnvelope) error {
 	if err := s.preflight(); err != nil {
 		return err
@@ -711,9 +737,11 @@ func validateBase(eventID, tenantID, gcid string) error {
 // internal/adapter/events/protodecode.
 // -----------------------------------------------------------------------------
 
-// DecodeStageUpWithAttrs is the attribute-aware variant.
-func DecodeStageUpWithAttrs(blob []byte, attrs map[string]string) (StageUpEnvelope, error) {
-	m, err := protodecode.DecodePayloadMapWithAttrs(TopicFamiliarStageUp, blob, attrs)
+// DecodeStageUpWithAttrs is the attribute-aware variant. The topic selects
+// the binary decoder in protodecode — pass the subject the message arrived
+// on (companion.* canonical or familiar.* legacy).
+func DecodeStageUpWithAttrs(topic string, blob []byte, attrs map[string]string) (StageUpEnvelope, error) {
+	m, err := protodecode.DecodePayloadMapWithAttrs(topic, blob, attrs)
 	if err != nil {
 		return StageUpEnvelope{}, fmt.Errorf("subscribers: decode stage_up: %w", err)
 	}
@@ -732,9 +760,10 @@ func DecodeStageUpWithAttrs(blob []byte, attrs map[string]string) (StageUpEnvelo
 	}, nil
 }
 
-// DecodeBreedRevealedWithAttrs is the attribute-aware variant.
-func DecodeBreedRevealedWithAttrs(blob []byte, attrs map[string]string) (BreedRevealedEnvelope, error) {
-	m, err := protodecode.DecodePayloadMapWithAttrs(TopicFamiliarBreedRevealed, blob, attrs)
+// DecodeBreedRevealedWithAttrs is the attribute-aware variant. The topic
+// selects the binary decoder in protodecode (see DecodeStageUpWithAttrs).
+func DecodeBreedRevealedWithAttrs(topic string, blob []byte, attrs map[string]string) (BreedRevealedEnvelope, error) {
+	m, err := protodecode.DecodePayloadMapWithAttrs(topic, blob, attrs)
 	if err != nil {
 		return BreedRevealedEnvelope{}, fmt.Errorf("subscribers: decode breed_revealed: %w", err)
 	}
@@ -752,9 +781,10 @@ func DecodeBreedRevealedWithAttrs(blob []byte, attrs map[string]string) (BreedRe
 	}, nil
 }
 
-// DecodeHatchedWithAttrs is the attribute-aware variant.
-func DecodeHatchedWithAttrs(blob []byte, attrs map[string]string) (HatchedEnvelope, error) {
-	m, err := protodecode.DecodePayloadMapWithAttrs(TopicFamiliarHatched, blob, attrs)
+// DecodeHatchedWithAttrs is the attribute-aware variant. The topic selects
+// the binary decoder in protodecode (see DecodeStageUpWithAttrs).
+func DecodeHatchedWithAttrs(topic string, blob []byte, attrs map[string]string) (HatchedEnvelope, error) {
+	m, err := protodecode.DecodePayloadMapWithAttrs(topic, blob, attrs)
 	if err != nil {
 		return HatchedEnvelope{}, fmt.Errorf("subscribers: decode hatched: %w", err)
 	}
@@ -773,9 +803,10 @@ func DecodeHatchedWithAttrs(blob []byte, attrs map[string]string) (HatchedEnvelo
 	}, nil
 }
 
-// DecodeSourceRevelationWithAttrs is the attribute-aware variant.
-func DecodeSourceRevelationWithAttrs(blob []byte, attrs map[string]string) (SourceRevelationEnvelope, error) {
-	m, err := protodecode.DecodePayloadMapWithAttrs(TopicFamiliarSourceRevelation, blob, attrs)
+// DecodeSourceRevelationWithAttrs is the attribute-aware variant. The topic
+// selects the binary decoder in protodecode (see DecodeStageUpWithAttrs).
+func DecodeSourceRevelationWithAttrs(topic string, blob []byte, attrs map[string]string) (SourceRevelationEnvelope, error) {
+	m, err := protodecode.DecodePayloadMapWithAttrs(topic, blob, attrs)
 	if err != nil {
 		return SourceRevelationEnvelope{}, fmt.Errorf("subscribers: decode source_revelation: %w", err)
 	}
