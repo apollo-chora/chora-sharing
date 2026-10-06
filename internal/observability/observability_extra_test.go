@@ -1,10 +1,5 @@
-// Additional coverage for the fail-soft async OTLP init entry point and the
-// IMDA evidence log shims - all callable from the public API without
-// touching production code.
-//
-// NOTE: randHex's entropy-failure fallback is not exercised - on Go >= 1.24
-// crypto/rand.Read fatals on reader failure (go.dev/issue/66821), so the
-// fallback branch is unreachable from a test.
+// Additional coverage for the fail-soft async OTLP init entry point -
+// callable from the public API without touching production code.
 package observability_test
 
 import (
@@ -24,14 +19,4 @@ func TestInitAsync_ReturnsHandle(t *testing.T) {
 	if h == nil {
 		t.Fatal("InitAsync returned nil handle")
 	}
-}
-
-func TestLogDraftEvent_DoesNotPanic(t *testing.T) {
-	tc := obs.TraceContext{TraceID: "x", SpanID: "y", TraceFlg: "01"}
-	obs.LogDraftEvent(tc, "tenant", "gcid", "draft-1", "publish")
-}
-
-func TestLogPreferenceUpdate_DoesNotPanic(t *testing.T) {
-	tc := obs.TraceContext{TraceID: "x", SpanID: "y", TraceFlg: "01"}
-	obs.LogPreferenceUpdate(tc, "tenant", "gcid", "public")
 }

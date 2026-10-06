@@ -1,7 +1,6 @@
 package httpadapter
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -233,131 +232,6 @@ func (h *Handler) unblockMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// followUser — POST /v1/connections/{target_gcid}/follow.
-func (h *Handler) followUser(w http.ResponseWriter, r *http.Request) {
-	if h.deps.Graph == nil {
-		writeErr(w, http.StatusNotImplemented, notWiredMsg("Graph"))
-		return
-	}
-	target := strings.TrimSpace(r.PathValue("target_gcid"))
-	if target == "" {
-		writeErr(w, http.StatusBadRequest, "target_gcid path segment required")
-		return
-	}
-	follower := gcidFrom(r)
-	tenant := tenantFrom(r)
-
-	_, created, err := h.deps.Graph.Follow(r.Context(), tenant, follower, target)
-	if err != nil {
-		if errors.Is(err, social.ErrSelfFollow) {
-			writeErr(w, http.StatusBadRequest, "cannot follow self")
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "follow: "+err.Error())
-		return
-	}
-	if h.deps.Connections != nil {
-		if err := h.deps.Connections.SaveFollow(r.Context(), tenant, follower, target); err != nil {
-			writeErr(w, http.StatusInternalServerError, "persist follow: "+err.Error())
-			return
-		}
-	}
-	if created {
-		writeJSON(w, http.StatusCreated, connectionJSON{GCID: target})
-	} else {
-		writeJSON(w, http.StatusOK, connectionJSON{GCID: target})
-	}
-}
-
-// unfollowUser — DELETE /v1/connections/{target_gcid}/follow.
-func (h *Handler) unfollowUser(w http.ResponseWriter, r *http.Request) {
-	if h.deps.Graph == nil {
-		writeErr(w, http.StatusNotImplemented, notWiredMsg("Graph"))
-		return
-	}
-	target := strings.TrimSpace(r.PathValue("target_gcid"))
-	if target == "" {
-		writeErr(w, http.StatusBadRequest, "target_gcid path segment required")
-		return
-	}
-	follower := gcidFrom(r)
-	_, _ = h.deps.Graph.Unfollow(r.Context(), tenantFrom(r), follower, target)
-	if h.deps.Connections != nil {
-		_ = h.deps.Connections.DeleteFollow(r.Context(), follower, target)
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// blockUser — POST /v1/connections/{target_gcid}/block.
-func (h *Handler) blockUser(w http.ResponseWriter, r *http.Request) {
-	if h.deps.Graph == nil {
-		writeErr(w, http.StatusNotImplemented, notWiredMsg("Graph"))
-		return
-	}
-	target := strings.TrimSpace(r.PathValue("target_gcid"))
-	if target == "" {
-		writeErr(w, http.StatusBadRequest, "target_gcid path segment required")
-		return
-	}
-	blocker := gcidFrom(r)
-	tenant := tenantFrom(r)
-
-	if err := h.deps.Graph.Block(r.Context(), tenant, blocker, target); err != nil {
-		if errors.Is(err, social.ErrSelfFollow) {
-			writeErr(w, http.StatusBadRequest, "cannot block self")
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "block: "+err.Error())
-		return
-	}
-	// Blocking auto-unfollows — the blocked user's content disappears.
-	_, _ = h.deps.Graph.Unfollow(r.Context(), tenant, blocker, target)
-	// Persist to the connections table so the block survives restarts.
-	if h.deps.Connections != nil {
-		if err := h.deps.Connections.SaveBlock(r.Context(), tenant, blocker, target); err != nil {
-			writeErr(w, http.StatusInternalServerError, "persist block: "+err.Error())
-			return
-		}
-	}
-	writeJSON(w, http.StatusCreated, connectionJSON{GCID: target})
-}
-
-// unblockUser — DELETE /v1/connections/{target_gcid}/block.
-func (h *Handler) unblockUser(w http.ResponseWriter, r *http.Request) {
-	if h.deps.Graph == nil {
-		writeErr(w, http.StatusNotImplemented, notWiredMsg("Graph"))
-		return
-	}
-	target := strings.TrimSpace(r.PathValue("target_gcid"))
-	if target == "" {
-		writeErr(w, http.StatusBadRequest, "target_gcid path segment required")
-		return
-	}
-	blocker := gcidFrom(r)
-	_, _ = h.deps.Graph.Unblock(r.Context(), tenantFrom(r), blocker, target)
-	if h.deps.Connections != nil {
-		_ = h.deps.Connections.DeleteBlock(r.Context(), blocker, target)
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// resolveDisplayName looks up the most recent author_display_name from
-// social_feed_entries for the given gcid.
-func (h *Handler) resolveDisplayName(r *http.Request, gcid string) string {
-	if h.deps.Shares == nil {
-		return ""
-	}
-	ctx := r.Context()
-	type nameResolver interface {
-		ResolveDisplayName(ctx context.Context, gcid string) (string, error)
-	}
-	if resolver, ok := h.deps.Shares.(nameResolver); ok {
-		name, _ := resolver.ResolveDisplayName(ctx, gcid)
-		return name
-	}
-	return ""
 }
 
 // =============================================================================

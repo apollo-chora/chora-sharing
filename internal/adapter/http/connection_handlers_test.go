@@ -7,10 +7,8 @@
 //	DELETE /v1/connections/blocks/{gcid}
 //	GET    /v1/connections/suggestions
 //
-// plus the legacy per-target handlers (followUser/unfollowUser/blockUser/
-// unblockUser — no longer mounted on the mux, exercised directly) and the
-// shared helpers relationshipErrToStatus / targetFromBody / targetFromPath /
-// resolveDisplayName.
+// plus the shared helpers relationshipErrToStatus / targetFromBody /
+// targetFromPath.
 package httpadapter
 
 import (
@@ -23,7 +21,6 @@ import (
 
 	"github.com/apollo-chora/chora-common/tracing"
 	"github.com/apollo-chora/chora-sharing/internal/adapter/inmem"
-	"github.com/apollo-chora/chora-sharing/internal/domain/atom_share"
 	"github.com/apollo-chora/chora-sharing/internal/domain/social"
 )
 
@@ -399,7 +396,7 @@ func TestUnblockMember_204AndErrors(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy per-target handlers (no longer mounted — called directly)
+// Legacy per-target routes are not mounted
 // ---------------------------------------------------------------------------
 
 func identityReq(method, path string) *http.Request {
@@ -422,240 +419,6 @@ func TestLegacyHandlers_NoLongerMounted(t *testing.T) {
 	if rr.Code == http.StatusOK || rr.Code == http.StatusCreated {
 		t.Fatalf("legacy follow route answered %d — it must not be mounted", rr.Code)
 	}
-}
-
-func TestFollowUser_Direct(t *testing.T) {
-	t.Parallel()
-	graph := inmem.NewSocialGraph()
-	conns := &recConnections{}
-	h2 := NewHandler(Deps{Graph: graph, Connections: conns})
-
-	// Created path.
-	req := identityReq(http.MethodPost, "/v1/connections/x/follow")
-	req.SetPathValue("target_gcid", connOther)
-	rr := httptest.NewRecorder()
-	h2.followUser(rr, req)
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("created: status=%d body=%s, want 201", rr.Code, rr.Body.String())
-	}
-	if len(conns.saved) != 1 || conns.saved[0] != connOther {
-		t.Errorf("SaveFollow not called with target: %v", conns.saved)
-	}
-
-	// Duplicate → 200.
-	req2 := identityReq(http.MethodPost, "/v1/connections/x/follow")
-	req2.SetPathValue("target_gcid", connOther)
-	rr2 := httptest.NewRecorder()
-	h2.followUser(rr2, req2)
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("duplicate: status=%d, want 200", rr2.Code)
-	}
-
-	// Empty target → 400.
-	req3 := identityReq(http.MethodPost, "/v1/connections/x/follow")
-	req3.SetPathValue("target_gcid", "   ")
-	rr3 := httptest.NewRecorder()
-	h2.followUser(rr3, req3)
-	if rr3.Code != http.StatusBadRequest {
-		t.Fatalf("empty target: status=%d, want 400", rr3.Code)
-	}
-
-	// Self-follow via graph → 400.
-	req4 := identityReq(http.MethodPost, "/v1/connections/x/follow")
-	req4.SetPathValue("target_gcid", connGCID)
-	rr4 := httptest.NewRecorder()
-	h2.followUser(rr4, req4)
-	if rr4.Code != http.StatusBadRequest {
-		t.Fatalf("self-follow: status=%d, want 400", rr4.Code)
-	}
-
-	// Graph fault → 500.
-	h5 := NewHandler(Deps{Graph: &errGraph{err: errors.New("db down")}})
-	req5 := identityReq(http.MethodPost, "/v1/connections/x/follow")
-	req5.SetPathValue("target_gcid", connOther)
-	rr5 := httptest.NewRecorder()
-	h5.followUser(rr5, req5)
-	if rr5.Code != http.StatusInternalServerError {
-		t.Fatalf("graph fault: status=%d, want 500", rr5.Code)
-	}
-
-	// Persist fault → 500.
-	h6 := NewHandler(Deps{Graph: graph, Connections: &recConnections{saveErr: errors.New("pg down")}})
-	req6 := identityReq(http.MethodPost, "/v1/connections/x/follow")
-	req6.SetPathValue("target_gcid", connOther)
-	rr6 := httptest.NewRecorder()
-	h6.followUser(rr6, req6)
-	if rr6.Code != http.StatusInternalServerError {
-		t.Fatalf("persist fault: status=%d, want 500", rr6.Code)
-	}
-
-	// Nil graph → 501.
-	h7 := NewHandler(Deps{})
-	req7 := identityReq(http.MethodPost, "/v1/connections/x/follow")
-	req7.SetPathValue("target_gcid", connOther)
-	rr7 := httptest.NewRecorder()
-	h7.followUser(rr7, req7)
-	if rr7.Code != http.StatusNotImplemented {
-		t.Fatalf("nil graph: status=%d, want 501", rr7.Code)
-	}
-}
-
-func TestUnfollowUser_Direct(t *testing.T) {
-	t.Parallel()
-	graph := inmem.NewSocialGraph()
-	_, _, _ = graph.Follow(context.Background(), connTenant, connGCID, connOther)
-	conns := &recConnections{}
-	h := NewHandler(Deps{Graph: graph, Connections: conns})
-
-	req := identityReq(http.MethodDelete, "/v1/connections/x/follow")
-	req.SetPathValue("target_gcid", connOther)
-	rr := httptest.NewRecorder()
-	h.unfollowUser(rr, req)
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status=%d, want 204", rr.Code)
-	}
-	if len(conns.deleted) != 1 || conns.deleted[0] != connOther {
-		t.Errorf("DeleteFollow not called: %v", conns.deleted)
-	}
-
-	// Empty target → 400; nil graph → 501.
-	h400 := NewHandler(Deps{Graph: graph})
-	req2 := identityReq(http.MethodDelete, "/v1/connections/x/follow")
-	req2.SetPathValue("target_gcid", " ")
-	rr2 := httptest.NewRecorder()
-	h400.unfollowUser(rr2, req2)
-	if rr2.Code != http.StatusBadRequest {
-		t.Errorf("empty target: status=%d, want 400", rr2.Code)
-	}
-
-	h501 := NewHandler(Deps{})
-	req3 := identityReq(http.MethodDelete, "/v1/connections/x/follow")
-	req3.SetPathValue("target_gcid", connOther)
-	rr3 := httptest.NewRecorder()
-	h501.unfollowUser(rr3, req3)
-	if rr3.Code != http.StatusNotImplemented {
-		t.Errorf("nil graph: status=%d, want 501", rr3.Code)
-	}
-}
-
-func TestBlockUser_Direct(t *testing.T) {
-	t.Parallel()
-	graph := inmem.NewSocialGraph()
-	conns := &recConnections{}
-	h := NewHandler(Deps{Graph: graph, Connections: conns})
-
-	req := identityReq(http.MethodPost, "/v1/connections/x/block")
-	req.SetPathValue("target_gcid", connOther)
-	rr := httptest.NewRecorder()
-	h.blockUser(rr, req)
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s, want 201", rr.Code, rr.Body.String())
-	}
-	if len(conns.blocks) != 1 || conns.blocks[0] != connOther {
-		t.Errorf("SaveBlock not called: %v", conns.blocks)
-	}
-
-	// Self block → 400 (mapped from ErrSelfFollow). The inmem graph returns
-	// ErrSelfBlock, which the handler maps to 500 — the pg adapter surfaces
-	// ErrSelfFollow, so drive that with a fake.
-	h400 := NewHandler(Deps{Graph: &errGraph{err: social.ErrSelfFollow}})
-	req2 := identityReq(http.MethodPost, "/v1/connections/x/block")
-	req2.SetPathValue("target_gcid", connGCID)
-	rr2 := httptest.NewRecorder()
-	h400.blockUser(rr2, req2)
-	if rr2.Code != http.StatusBadRequest {
-		t.Errorf("self-block: status=%d, want 400", rr2.Code)
-	}
-
-	// Graph fault (non-self) → 500; empty target → 400; nil graph → 501.
-	h500 := NewHandler(Deps{Graph: &errGraph{err: errors.New("boom")}})
-	req3 := identityReq(http.MethodPost, "/v1/connections/x/block")
-	req3.SetPathValue("target_gcid", connOther)
-	rr3 := httptest.NewRecorder()
-	h500.blockUser(rr3, req3)
-	if rr3.Code != http.StatusInternalServerError {
-		t.Errorf("graph fault: status=%d, want 500", rr3.Code)
-	}
-
-	req4 := identityReq(http.MethodPost, "/v1/connections/x/block")
-	req4.SetPathValue("target_gcid", " ")
-	rr4 := httptest.NewRecorder()
-	h400.blockUser(rr4, req4)
-	if rr4.Code != http.StatusBadRequest {
-		t.Errorf("empty target: status=%d, want 400", rr4.Code)
-	}
-
-	h501 := NewHandler(Deps{})
-	req5 := identityReq(http.MethodPost, "/v1/connections/x/block")
-	req5.SetPathValue("target_gcid", connOther)
-	rr5 := httptest.NewRecorder()
-	h501.blockUser(rr5, req5)
-	if rr5.Code != http.StatusNotImplemented {
-		t.Errorf("nil graph: status=%d, want 501", rr5.Code)
-	}
-}
-
-func TestUnblockUser_Direct(t *testing.T) {
-	t.Parallel()
-	graph := inmem.NewSocialGraph()
-	_ = graph.Block(context.Background(), connTenant, connGCID, connOther)
-	conns := &recConnections{}
-	h := NewHandler(Deps{Graph: graph, Connections: conns})
-
-	req := identityReq(http.MethodDelete, "/v1/connections/x/block")
-	req.SetPathValue("target_gcid", connOther)
-	rr := httptest.NewRecorder()
-	h.unblockUser(rr, req)
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status=%d, want 204", rr.Code)
-	}
-	if len(conns.unblocks) != 1 || conns.unblocks[0] != connOther {
-		t.Errorf("DeleteBlock not called: %v", conns.unblocks)
-	}
-
-	h400 := NewHandler(Deps{Graph: graph})
-	req2 := identityReq(http.MethodDelete, "/v1/connections/x/block")
-	req2.SetPathValue("target_gcid", " ")
-	rr2 := httptest.NewRecorder()
-	h400.unblockUser(rr2, req2)
-	if rr2.Code != http.StatusBadRequest {
-		t.Errorf("empty target: status=%d, want 400", rr2.Code)
-	}
-
-	h501 := NewHandler(Deps{})
-	req3 := identityReq(http.MethodDelete, "/v1/connections/x/block")
-	req3.SetPathValue("target_gcid", connOther)
-	rr3 := httptest.NewRecorder()
-	h501.unblockUser(rr3, req3)
-	if rr3.Code != http.StatusNotImplemented {
-		t.Errorf("nil graph: status=%d, want 501", rr3.Code)
-	}
-}
-
-// recConnections is a recording ConnectionStore for the legacy handlers.
-type recConnections struct {
-	saved    []string
-	deleted  []string
-	blocks   []string
-	unblocks []string
-	saveErr  error
-}
-
-func (c *recConnections) SaveFollow(_ context.Context, _, follower, followee string) error {
-	c.saved = append(c.saved, followee)
-	return c.saveErr
-}
-func (c *recConnections) DeleteFollow(_ context.Context, follower, followee string) error {
-	c.deleted = append(c.deleted, followee)
-	return nil
-}
-func (c *recConnections) SaveBlock(_ context.Context, _, blocker, blocked string) error {
-	c.blocks = append(c.blocks, blocked)
-	return c.saveErr
-}
-func (c *recConnections) DeleteBlock(_ context.Context, blocker, blocked string) error {
-	c.unblocks = append(c.unblocks, blocked)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -760,49 +523,5 @@ func TestTargetFromPath(t *testing.T) {
 	_, ok2 := targetFromPath(rr2, req2)
 	if ok2 || rr2.Code != http.StatusBadRequest {
 		t.Errorf("empty path: ok=%v code=%d, want 400", ok2, rr2.Code)
-	}
-}
-
-// nameResolvingShares is a ShareRepo whose extra method satisfies
-// resolveDisplayName's inline `nameResolver` interface.
-type nameResolvingShares struct{}
-
-func (s *nameResolvingShares) SaveShare(_ context.Context, _ *atom_share.Share) error { return nil }
-func (s *nameResolvingShares) GetShare(_ context.Context, _ string) (*atom_share.Share, error) {
-	return nil, atom_share.ErrNotFound
-}
-func (s *nameResolvingShares) GetShareByAtom(_ context.Context, _, _ string) (*atom_share.Share, error) {
-	return nil, atom_share.ErrNotFound
-}
-func (s *nameResolvingShares) ListSharedAtoms(_ context.Context, _ string, _ string, _ int, _, _ string, _ string, _, _ []string) ([]atom_share.Share, string, error) {
-	return nil, "", nil
-}
-func (s *nameResolvingShares) AppendEvent(_ context.Context, _ *atom_share.ShareEvent) error { return nil }
-func (s *nameResolvingShares) ListEvents(_ context.Context, _ string) ([]atom_share.ShareEvent, error) {
-	return nil, nil
-}
-func (s *nameResolvingShares) ResolveDisplayName(_ context.Context, gcid string) (string, error) {
-	return "name-of-" + gcid, nil
-}
-
-func TestResolveDisplayName(t *testing.T) {
-	t.Parallel()
-	h := NewHandler(Deps{Shares: &nameResolvingShares{}})
-	req := connReq(http.MethodGet, "/v1/connections", "")
-	got := h.resolveDisplayName(req, connOther)
-	if got != "name-of-"+connOther {
-		t.Errorf("resolveDisplayName = %q, want name-of-"+connOther, got)
-	}
-
-	// Nil Shares → "".
-	hNil := NewHandler(Deps{})
-	if got := hNil.resolveDisplayName(req, connOther); got != "" {
-		t.Errorf("nil Shares: got %q, want empty", got)
-	}
-
-	// A ShareRepo WITHOUT the extra method → "".
-	hPlain := NewHandler(Deps{Shares: inmem.NewShareRepo()})
-	if got := hPlain.resolveDisplayName(req, connOther); got != "" {
-		t.Errorf("plain repo: got %q, want empty", got)
 	}
 }

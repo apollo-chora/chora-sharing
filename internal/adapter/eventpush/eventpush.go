@@ -41,8 +41,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/apollo-chora/chora-common/eventbus"
 )
 
 // ErrBadRequest is returned by Decode when the inbound HTTP request does not
@@ -127,38 +125,6 @@ func Decode(r *http.Request) (PushMessage, error) {
 		Attributes:   env.Message.Attributes,
 		Subscription: env.Subscription,
 	}, nil
-}
-
-// FromEventbus projects a NATS JetStream eventbus delivery onto the
-// PushMessage shape so the same dispatch logic serves both transports. The
-// eventbus subject is exposed under the "topic" attribute (the key the
-// existing dispatch callbacks read), and the envelope fields are projected
-// under their canonical attribute names.
-func FromEventbus(msg eventbus.Message) PushMessage {
-	attrs := map[string]string{
-		"topic":           msg.Subject,
-		"event_id":        msg.Envelope.EventID,
-		"idempotency_key": msg.Envelope.IdempotencyKey,
-		"tenant_id":       msg.Envelope.TenantID,
-		"gcid":            msg.Envelope.GCID,
-		"traceparent":     msg.Envelope.Traceparent,
-		"tracestate":      msg.Envelope.Tracestate,
-		"source_project":  msg.Envelope.SourceProject,
-		"source_service":  msg.Envelope.SourceService,
-	}
-	if !msg.Envelope.OccurredAt.IsZero() {
-		attrs["occurred_at"] = msg.Envelope.OccurredAt.Format(time.RFC3339Nano)
-	}
-	if !msg.Envelope.PublishedAt.IsZero() {
-		attrs["published_at"] = msg.Envelope.PublishedAt.Format(time.RFC3339Nano)
-	}
-	if msg.Envelope.SchemaVersion != 0 {
-		attrs["schema_version"] = fmt.Sprintf("%d", msg.Envelope.SchemaVersion)
-	}
-	return PushMessage{
-		Data:       msg.Payload,
-		Attributes: attrs,
-	}
 }
 
 // ---------------------------------------------------------------------------
