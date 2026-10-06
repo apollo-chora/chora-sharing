@@ -1,112 +1,113 @@
 # chora-sharing
 
-Social + engagement service for Chora: the C+ content-sharing plane. It owns
-posts, reactions, comments, the social graph (follow / block), atom sharing
-with grants + royalties, real-time duels (ELO + matchmaking + WebSocket),
-leaderboards, bookmarks, the cross-domain discovery feed, familiar-milestone
-auto-posting, and profile generation.
+## About
 
-The service is cloud-neutral: PostgreSQL for persistence, NATS JetStream for
-events, env-backed configuration for secrets. No cloud account or managed
-services (managed SQL, Pub/Sub, Secret Manager, or CI/CD) are required.
+`chora-sharing` is a Go service that owns Chora's content-sharing and social features. It provides atom sharing and grants, posts with reactions and comments, social connections, bookmarks, discovery projections, profiles, leaderboards, and real-time duels with matchmaking and ELO ratings. The service exposes REST and gRPC APIs and uses PostgreSQL and NATS JetStream when those dependencies are configured, with in-memory adapters available for local development.
 
-## What it does
+## Quick start
 
-1. **Social graph** — follow / unfollow / block / unblock / suggestions, with
-   relationship events written in the same transaction as the state change.
-2. **Posts + reactions + comments** — pg-backed (RLS-aware) or in-memory in
-   dev; keyset-paginated comment feeds.
-3. **Atom sharing** — share / revoke atoms, grants + royalty tracking,
-   bookmarks, and the shared-atom feed.
-4. **Duels** — PG-backed matchmaking queue (multi-pod safe), ELO rating,
-   real-time WebSocket play (`/v1/duels/{duel_id}/ws`), round-timer sweep,
-   blitz mode.
-5. **Leaderboards** — weekly + all-time boards fed by live-quiz scores, duel
-   completions, and weakness-grown XP.
-6. **Discovery feed** — cross-domain projection of
-   `chora.delivery.course.published.v1` and
-   `chora.consumption.atom_session.completed.v1` into the C+ discovery feed.
-7. **Familiar milestones** — consumes the four
-   `chora.consumption.familiar.*.v1` topics and auto-posts / drafts /
-   suppresses per-user preference (configurable templates + default policy).
-8. **Event-push inboxes** — HTTP receivers the gateway forwards
-   `/api/internal/pubsub/{course-published, weakness-grown, live-quiz-scores}`
-   to; the service refuses to boot if any assigned inbox is unmounted.
-9. **Federated closure saga** — consumes
-   `chora.sharing.pii.pseudonymise.requested.v1`, applies the per-domain
-   `PII_Closure_Map.yaml`, and acks on
-   `chora.sharing.account.pseudonymised.v1`.
+Prerequisites:
 
-## Architecture
+- Go 1.26.1 or newer
+- No external services are required for the basic in-memory development mode
 
-- **Compute**: any host running the Go binary or the container image.
-- **Database**: PostgreSQL (`chora_sharing`). Schema changes live in
-  `migrations/` and are applied with the shared migration runner.
-- **Event bus**: NATS JetStream via `chora-common/eventbus`. Outbound events
-  are written to `sharing_outbox_events` in the same transaction as the
-  domain state change; the outbox dispatcher drains pending rows to the bus.
-  Inbound cross-service events arrive either on the bus (durable JetStream
-  consumers) or via the HTTP push inboxes above.
-- **Ports**: HTTP `:8080` (REST + `/healthz` + `/readyz` + push inboxes);
-  gRPC `:9090` (`chora.services.sharing.v1.Sharing` + health + reflection).
+Clone the repository and start the server:
 
-## Configuration
+```sh
+git clone https://github.com/apollo-chora/chora-sharing.git
+cd chora-sharing
+go run ./cmd/server
+```
 
-Copy the example environment file:
+The server listens on HTTP port `8080` and gRPC port `9090` by default.
+
+For a local environment file:
 
 ```sh
 cp .env.example .env
 ```
 
-Important variables:
+Set `CHORA_DB_DSN` and `NATS_URL` when you want PostgreSQL persistence and NATS JetStream instead of the in-memory adapters. `CHORA_OUTBOX_DSN` enables the PostgreSQL-backed outbox.
 
-| Variable | Purpose | Local default |
-| --- | --- | --- |
-| `PORT` | HTTP port | `8080` |
-| `CHORA_GRPC_PORT` | gRPC port | `9090` |
-| `CHORA_DB_DSN` | PostgreSQL connection string (app_rw role) | unset (in-memory repos) |
-| `CHORA_OUTBOX_DSN` | Outbox database DSN (unset → no outbox dispatcher) | unset |
-| `CHORA_OUTBOX_WORKER_ID` | Outbox dispatcher worker id | `$HOSTNAME` / `chora-sharing-local` |
-| `NATS_URL` | NATS JetStream event bus | unset (in-memory bus) |
-| `CHORA_SOURCE_PROJECT` | Project label stamped into event envelopes | `chora-local` |
-| `SVC_IDENTITY_GRPC_URL` | chora-identity gRPC (display_name + mana) | unset |
-| `MODERATION_ENGINE_GKE_ENDPOINT` | Moderation crew (GKE web-mode ADK) | unset |
-| `PROFILE_CONJURER_GKE_ENDPOINT` | profile_conjurer crew (GKE web-mode ADK) | unset |
-| `DUEL_ATOM_SMITH_GKE_ENDPOINT` | duel_atom_smith crew (GKE web-mode ADK) | unset |
-| `CHORA_PUBSUB_PUSH_AUDIENCE_BASE` | Base URL for push-inbox bearer verification | unset (verification off) |
-| `CHORA_FAMILIAR_TEMPLATES_PATH` | Familiar-milestone template YAML override | embedded defaults |
-| `CHORA_PII_CLOSURE_MAP_PATH` | PII closure map YAML | `config/PII_Closure_Map.yaml` |
-| `CHORA_AGENT_GUARDRAIL_MAPPING` | Guardrail template-tier mapping YAML | `/etc/chora/agent-guardrail-mapping.yaml` |
-| `CHORA_SHARING_ROYALTY_CURRENCY` | Royalty currency code | (required) |
-| `CHORA_SHARING_MANA_ACTION_CODE` | Mana action code for royalty debit | (required) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/gRPC trace endpoint | unset (stdout) |
+## Usage
 
-Duel / leaderboard / matchmaking tuning lives in `internal/config` and is
-env-driven (`CHORA_SHARING_ELO_*`, `CHORA_SHARING_COMBO_TIERS`,
-`CHORA_SHARING_MM_*`, `CHORA_SHARING_ROUND_TIMER_SEC`, …) — see
-`internal/config/sharing_rules.go` for the full set with defaults.
+The HTTP API is served on `PORT` (default `8080`). Health checks do not require identity headers:
 
-## Run locally
-
-```sh
-go run ./cmd/server
+```text
+GET /healthz
+GET /readyz
 ```
 
-With `CHORA_DB_DSN` and `NATS_URL` set, the service wires the pg repos, the
-outbox dispatcher, and the durable JetStream subscribers. Unset, it runs on
-in-memory adapters (not durable).
+The versioned REST API is under `/v1`. Requests to `/v1/*` require the gateway-provided `gcid` and `X-Tenant-Id` identity headers.
 
-## Database migrations
+Main REST routes include:
 
-Forward migrations are every `migrations/*.sql` except `*.down.sql`. Apply
-them with the shared runner from `chora-stack/scripts/migrate.sh` (mount the
-repo's `migrations/` at `/migrations` and set `CHORA_MIGRATE_DSN`).
+| Area | Routes |
+| --- | --- |
+| Atom sharing | `POST /v1/atoms/{atom_id}/share`, `DELETE /v1/atoms/{atom_id}/share`, `GET /v1/feed/shared-atoms` |
+| Bookmarks | `POST /v1/atoms/{atom_id}/bookmark`, `DELETE /v1/atoms/{atom_id}/bookmark`, `GET /v1/me/bookmarks` |
+| Connections | `GET /v1/connections`, `POST /v1/connections/follows`, `DELETE /v1/connections/follows/{gcid}`, `POST /v1/connections/blocks`, `DELETE /v1/connections/blocks/{gcid}`, `GET /v1/connections/suggestions` |
+| Profiles | `GET /v1/me/profile`, `POST /v1/me/profile/generate`, `PUT /v1/me/profile/tags`, `GET /v1/me/profile/ws` |
+| Posts and social activity | `POST /v1/posts/{post_id}/reactions`, `DELETE /v1/posts/{post_id}/reactions/{reaction_id}`, `POST /v1/posts/{post_id}/comments`, `GET /v1/posts/{post_id}/comments`, `PATCH /v1/posts/{post_id}/comments/{comment_id}`, `DELETE /v1/posts/{post_id}/comments/{comment_id}`, `GET /v1/leaderboard` |
+| Duels | `GET /v1/duels`, `GET /v1/duels/{duel_id}`, `POST /v1/duels/{duel_id}/answer`, `GET /v1/duels/{duel_id}/ws`, `GET /v1/duels/my-rating`, `GET /v1/duels/leaderboard` |
+| Matchmaking | `POST /v1/duels/queue`, `DELETE /v1/duels/queue`, `POST /v1/duels/queue/heartbeat`, `GET /v1/duels/queue/status` |
+| Familiar-milestone drafts | `GET /v1/me/post-drafts`, `POST /v1/me/post-drafts/{draft_id}/publish`, `POST /v1/me/post-drafts/{draft_id}/discard`, `GET /v1/me/preferences/familiar-milestone-share`, `POST /v1/me/preferences/familiar-milestone-share` |
 
-## Tests
+The service also mounts three internal event-push inboxes:
 
-```sh
-go test ./...                 # unit tests (hermetic)
+```text
+POST /api/internal/pubsub/course-published
+POST /api/internal/pubsub/weakness-grown
+POST /api/internal/pubsub/live-quiz-scores
 ```
 
-Integration tests (build-tagged `integration`) run against real PostgreSQL
-when `CHORA_TEST_DSN` is set; they skip otherwise.
+The gRPC server listens on `CHORA_GRPC_PORT` (default `9090`) and registers the `chora.services.sharing.v1.Sharing` service, gRPC health checks, and reflection. The Sharing service implements RPCs for social relationships, posts and reactions, atom sharing and authorization, saved and entitled atoms, live-quiz atom authorization, leaderboard access, and quiz generation.
+
+For production-style persistence and event delivery, configure at least:
+
+```sh
+export CHORA_DB_DSN='postgres://user:password@host:5432/chora_sharing?sslmode=disable'
+export CHORA_OUTBOX_DSN='postgres://user:password@host:5432/chora_sharing?sslmode=disable'
+export NATS_URL='nats://127.0.0.1:4222'
+```
+
+Apply the SQL migrations from `migrations/` with the shared Chora migration runner. Forward migrations are the `*.up.sql` files; the runner uses `CHORA_MIGRATE_DSN` and the migrations directory mounted at `/migrations`.
+
+Configuration is environment-driven. Common settings are `PORT`, `CHORA_GRPC_PORT`, `CHORA_DB_DSN`, `CHORA_OUTBOX_DSN`, `NATS_URL`, `SVC_IDENTITY_GRPC_URL`, `MODERATION_ENGINE_GKE_ENDPOINT`, `PROFILE_CONJURER_GKE_ENDPOINT`, `DUEL_ATOM_SMITH_GKE_ENDPOINT`, `CHORA_PUBSUB_PUSH_AUDIENCE_BASE`, `CHORA_FAMILIAR_TEMPLATES_PATH`, `CHORA_PII_CLOSURE_MAP_PATH`, `CHORA_AGENT_GUARDRAIL_MAPPING`, `CHORA_SHARING_ROYALTY_CURRENCY`, `CHORA_SHARING_MANA_ACTION_CODE`, and `OTEL_EXPORTER_OTLP_ENDPOINT`. Duel, leaderboard, royalty, matchmaking, round-timer, and Blitz rules are loaded from the `CHORA_SHARING_*` environment variables defined in `internal/config/sharing_rules.go`.
+
+## Development
+
+The repository is a single Go module:
+
+```text
+cmd/server/                    service entrypoint and dependency wiring
+internal/domain/               domain aggregates and business rules
+internal/adapter/http/         REST handlers and event-push handlers
+internal/adapter/grpc/         gRPC service implementation
+internal/adapter/pg/            PostgreSQL repositories
+internal/adapter/inmem/         in-memory development adapters
+internal/adapter/events/       event publisher adapters
+internal/adapter/outbox/        PostgreSQL outbox support
+internal/adapter/ws/            WebSocket duel and profile handlers
+internal/adapter/matchmaking/   matchmaking implementation
+internal/adapter/subscribers/   inbound event subscribers
+internal/config/               environment-driven sharing rules
+config/                        YAML configuration used by the service
+migrations/                    PostgreSQL schema migrations
+```
+
+Run the unit test suite with:
+
+```sh
+go test ./...
+```
+
+The repository also contains integration tests behind the `integration` build tag. They use real PostgreSQL when `CHORA_TEST_DSN` is set and otherwise skip.
+
+Build the server binary with:
+
+```sh
+go build ./cmd/server
+```
+
+The included `Dockerfile` builds a static Linux binary and packages it in an Alpine-based runtime image.
