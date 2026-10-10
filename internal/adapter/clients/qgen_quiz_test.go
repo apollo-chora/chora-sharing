@@ -34,12 +34,12 @@ const validQuestionJSON = `[{"atom_id":"a1","atom_revision_id":"r1","stem":"What
 
 func TestNewQuizGenClient(t *testing.T) {
 	gw := &fakeModelGatewayClient{}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 	if c == nil {
 		t.Fatal("NewQuizGenClient returned nil")
 	}
-	if c.modelID != "gemini-2.5-flash" {
-		t.Errorf("modelID = %q, want gemini-2.5-flash", c.modelID)
+	if c.modelID != "longcat-2.5-preview" {
+		t.Errorf("modelID = %q, want longcat-2.5-preview", c.modelID)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestQuizGenClient_GenerateQuizQuestions_HappyPath(t *testing.T) {
 		Completion:   validQuestionJSON,
 		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
 	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 
 	qs, err := c.GenerateQuizQuestions(context.Background(), "gcid-instr", "tenant-x", "Probability", []string{"bayes", "poker"}, 2)
 	if err != nil {
@@ -68,8 +68,8 @@ func TestQuizGenClient_GenerateQuizQuestions_HappyPath(t *testing.T) {
 	if req.GetTenantId() != "tenant-x" || req.GetGcid() != "gcid-instr" {
 		t.Errorf("scoping = tenant:%q gcid:%q, want tenant-x/gcid-instr", req.GetTenantId(), req.GetGcid())
 	}
-	if req.GetLogicalModelId() != "gemini-2.5-flash" {
-		t.Errorf("LogicalModelId = %q, want gemini-2.5-flash", req.GetLogicalModelId())
+	if req.GetLogicalModelId() != "longcat-2.5-preview" {
+		t.Errorf("LogicalModelId = %q, want longcat-2.5-preview", req.GetLogicalModelId())
 	}
 	if req.GetCrewKind() != "qgen" {
 		t.Errorf("CrewKind = %q, want qgen", req.GetCrewKind())
@@ -90,7 +90,7 @@ func TestQuizGenClient_GenerateQuizQuestions_ForwardsTraceparent(t *testing.T) {
 		Completion:   validQuestionJSON,
 		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
 	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 	ctx := WithTraceparent(context.Background(), "00-11112222333344445555666677778888-9999aaaabbbbcccc-01")
 	if _, err := c.GenerateQuizQuestions(ctx, "g", "t", "topic", nil, 1); err != nil {
 		t.Fatalf("GenerateQuizQuestions: %v", err)
@@ -105,7 +105,7 @@ func TestQuizGenClient_GenerateQuizQuestions_MintsTraceparentWhenAbsent(t *testi
 		Completion:   validQuestionJSON,
 		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
 	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 	if _, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1); err != nil {
 		t.Fatalf("GenerateQuizQuestions: %v", err)
 	}
@@ -120,14 +120,14 @@ func TestQuizGenClient_GenerateQuizQuestions_NotConfigured(t *testing.T) {
 	if _, err := nilC.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1); !errors.Is(err, livequiz.ErrQuizGeneratorNotConfigured) {
 		t.Errorf("nil receiver: err = %v, want ErrQuizGeneratorNotConfigured", err)
 	}
-	c := NewQuizGenClient(nil, "gemini-2.5-flash")
+	c := NewQuizGenClient(nil, "longcat-2.5-preview")
 	if _, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1); !errors.Is(err, livequiz.ErrQuizGeneratorNotConfigured) {
 		t.Errorf("nil gateway: err = %v, want ErrQuizGeneratorNotConfigured", err)
 	}
 }
 
 func TestQuizGenClient_GenerateQuizQuestions_InvalidArgs(t *testing.T) {
-	c := NewQuizGenClient(&fakeModelGatewayClient{}, "gemini-2.5-flash")
+	c := NewQuizGenClient(&fakeModelGatewayClient{}, "longcat-2.5-preview")
 	cases := []struct {
 		name       string
 		instructor string
@@ -150,7 +150,7 @@ func TestQuizGenClient_GenerateQuizQuestions_InvalidArgs(t *testing.T) {
 
 func TestQuizGenClient_GenerateQuizQuestions_InvokeError(t *testing.T) {
 	gw := &fakeModelGatewayClient{invokeErr: errors.New("gateway down")}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "quizgen invoke") {
 		t.Errorf("err = %v, want quizgen invoke wrap", err)
@@ -163,7 +163,7 @@ func TestQuizGenClient_GenerateQuizQuestions_NonCompleteFinishReason(t *testing.
 		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_MAX_TOKENS,
 		FinishDetail: "hit ceiling",
 	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "finish_reason") {
 		t.Errorf("err = %v, want finish_reason error", err)
@@ -175,7 +175,7 @@ func TestQuizGenClient_GenerateQuizQuestions_EmptyCompletionIsError(t *testing.T
 		Completion:   "",
 		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
 	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "quizgen parse") {
 		t.Errorf("err = %v, want quizgen parse wrap", err)
@@ -187,7 +187,7 @@ func TestQuizGenClient_GenerateQuizQuestions_ZeroQuestionsReturned(t *testing.T)
 		Completion:   `[]`,
 		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
 	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw, "longcat-2.5-preview")
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "0 questions") {
 		t.Errorf("err = %v, want 0 questions error", err)
