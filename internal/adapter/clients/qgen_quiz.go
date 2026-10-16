@@ -1,8 +1,8 @@
-// Package clients — LiveQuiz QGen draft client (chora-model-gateway).
+// Package clients — LiveQuiz QGen draft client (model-gateway).
 //
-// QuizGenClient implements livequiz.QuizGenerator by invoking the QGen crew
-// via chora-model-gateway ModelGatewayService.Invoke. Used by the
-// GenerateQuizFromTopic bridge (§7.9) to draft LiveQuiz questions for HITL.
+// QuizGenClient implements livequiz.QuizGenerator by invoking the model
+// gateway's Invoke RPC. Used by the GenerateQuizFromTopic bridge (§7.9) to
+// draft LiveQuiz questions for HITL.
 //
 // Per §9 + FR-020: the output is UNTRUSTED — the caller (the http adapter
 // §7.9) re-validates every atom_id against the instructor's entitled set
@@ -20,8 +20,10 @@ import (
 	"strings"
 
 	"github.com/apollo-chora/chora-sharing/internal/domain/livequiz"
-	modelgatewayv1 "github.com/apollo-chora/chora-contracts/gen/go/chora/services/model_gateway/v1"
+	gatewayv1 "github.com/apollo-chora/chora-sharing/internal/adapter/clients/gatewayv1"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
 // Compile-time check: *QuizGenClient satisfies livequiz.QuizGenerator.
@@ -31,17 +33,22 @@ var _ livequiz.QuizGenerator = (*QuizGenClient)(nil)
 // crew (same QGen crew, different prompt/template than battle questions).
 const quizAgentID = "qgen_quiz_draft"
 
+// quizCrewKind rides in the invocation's metadata. The gateway's Invoke RPC
+// has no crew_kind field of its own — the operation is named by the RPC
+// method, not by the caller — so this goes into metadata_json, which the
+// gateway maps onto the invocation's metadata.
+const quizCrewKind = "qgen"
+
 // QuizGenClient is the production implementation of livequiz.QuizGenerator.
 type QuizGenClient struct {
-	gw      modelgatewayv1.ModelGatewayServiceClient
-	modelID string // logical_model_id (e.g. "gemini-2.5-flash")
+	gw gatewayv1.ModelGatewayServiceClient
 }
 
 // NewQuizGenClient wraps a bound ModelGatewayServiceClient. Pass nil when the
 // env is unconfigured; the resulting client fails every call loud so handlers
 // emit 501 rather than silently returning a fake draft.
-func NewQuizGenClient(gw modelgatewayv1.ModelGatewayServiceClient, logicalModelID string) *QuizGenClient {
-	return &QuizGenClient{gw: gw, modelID: logicalModelID}
+func NewQuizGenClient(gw gatewayv1.ModelGatewayServiceClient) *QuizGenClient {
+	return &QuizGenClient{gw: gw}
 }
 
 // GenerateQuizQuestions asks the QGen crew to draft `questionCount` questions
@@ -65,26 +72,36 @@ func (c *QuizGenClient) GenerateQuizQuestions(ctx context.Context, instructorGCI
 	runID := uuid.Must(uuid.NewV7()).String()
 	prompt := buildQuizPrompt(topic, topicTags, questionCount)
 
-	resp, err := c.gw.Invoke(ctx, &modelgatewayv1.InvokeRequest{
-		InvocationId:    runID,
-		TenantId:        tenantID,
-		Gcid:            instructorGCID,
-		AgentId:         quizAgentID,
-		CrewKind:        "qgen",
-		LogicalModelId:  c.modelID,
-		Prompt:          prompt,
-		SystemPrompt:    quizSystemPrompt,
-		Traceparent:     resolveTraceparent(ctx),
+	resp, err := c.gw.Invoke(withTraceparent(ctx), &gatewayv1.InvokeRequest{
+		InvocationId: runID,
+		TenantId:     tenantID,
+		Gcid:         proto.String(instructorGCID),
+		AgentId:      quizAgentID,
+		// No model ID: the gateway resolves the operation from the RPC method
+		// and serves it from the text operation's own configured routes.
+		SystemInstruction: quizSystemPrompt,
+		Messages: []*gatewayv1.Message{{
+			Role:    gatewayv1.Role_ROLE_USER,
+			Content: []*gatewayv1.ContentPart{{
+				Part: &gatewayv1.ContentPart_Text{Text: &gatewayv1.TextPart{Text: prompt}},
+			}},
+		}},
+		MetadataJson: []byte(fmt.Sprintf(`{"crew_kind":%q}`, quizCrewKind)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("quizgen invoke: %w", err)
 	}
-	if rc := resp.GetFinishReason(); rc != modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE {
+	if rc := resp.GetFinishReason(); rc != gatewayv1.FinishReason_FINISH_REASON_STOP {
 		return nil, fmt.Errorf("quizgen invoke: finish_reason=%s detail=%q",
-			rc, resp.GetFinishDetail())
+			rc, resp.GetRawFinishReason())
 	}
 
-	questions, err := parseQuizQuestions(resp.GetCompletion(), runID)
+	answer, err := answerText(resp)
+	if err != nil {
+		return nil, fmt.Errorf("quizgen answer: %w", err)
+	}
+
+	questions, err := parseQuizQuestions(answer, runID)
 	if err != nil {
 		return nil, fmt.Errorf("quizgen parse: %w", err)
 	}
@@ -92,6 +109,49 @@ func (c *QuizGenClient) GenerateQuizQuestions(ctx context.Context, instructorGCI
 		return nil, fmt.Errorf("quizgen: model returned 0 questions for topic %q", topic)
 	}
 	return questions, nil
+}
+
+// withTraceparent moves the traceparent onto the gRPC metadata. The gateway's
+// Invoke RPC has no traceparent field; distributed tracing context travels as
+// the `traceparent` metadata key, which is where the OTel interceptor reads it.
+func withTraceparent(ctx context.Context) context.Context {
+	// AppendToOutgoingContext APPENDS rather than replaces, so a traceparent
+	// already on the outgoing metadata would reach the gateway twice.
+	if md, ok := metadata.FromOutgoingContext(ctx); ok && len(md.Get("traceparent")) > 0 {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, "traceparent", resolveTraceparent(ctx))
+}
+
+// answerText flattens the response's output items into the model's answer.
+//
+// The canonical output admits text, image and refusal parts plus tool calls.
+// Only text is a valid quiz draft. A refusal is the gateway declining to
+// answer, and dropping it silently would parse a truncated answer as a
+// complete one — so anything else is an error rather than something skipped.
+func answerText(resp *gatewayv1.InvokeResponse) (string, error) {
+	if resp == nil {
+		return "", fmt.Errorf("gateway returned no response")
+	}
+	var b strings.Builder
+	for _, item := range resp.GetOutput() {
+		part := item.GetContent()
+		if part == nil {
+			if item.GetToolCall() != nil {
+				return "", fmt.Errorf("model emitted a tool call, which is not a quiz draft")
+			}
+			continue
+		}
+		switch {
+		case part.GetText() != nil:
+			b.WriteString(part.GetText().GetText())
+		case part.GetRefusal() != nil:
+			return "", fmt.Errorf("model refused: %s", part.GetRefusal().GetText())
+		default:
+			return "", fmt.Errorf("model emitted a non-text content part, which is not a quiz draft")
+		}
+	}
+	return b.String(), nil
 }
 
 // quizEnvelope mirrors the JSON the QGen crew emits for a LiveQuiz draft.
@@ -120,7 +180,7 @@ func parseQuizQuestions(completion, runID string) ([]livequiz.GeneratedQuestion,
 		return nil, fmt.Errorf("unmarshal quiz questions: %w", err)
 	}
 	questions := make([]livequiz.GeneratedQuestion, 0, len(raw))
-	for i, e := range raw {
+	for _, e := range raw {
 		q := livequiz.GeneratedQuestion{
 			AtomID:          e.AtomID,
 			RevisionID:      e.RevisionID,
@@ -136,7 +196,6 @@ func parseQuizQuestions(completion, runID string) ([]livequiz.GeneratedQuestion,
 			continue
 		}
 		questions = append(questions, q)
-		_ = i
 	}
 	if len(questions) == 0 && len(raw) > 0 {
 		return nil, fmt.Errorf("all %d questions failed validation (run %s)", len(raw), runID)
