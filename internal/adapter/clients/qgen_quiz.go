@@ -20,7 +20,7 @@ import (
 	"strings"
 
 	"github.com/apollo-chora/chora-sharing/internal/domain/livequiz"
-	gatewayv1 "github.com/apollo-chora/model-gateway/gen/go/gateway/v1"
+	gatewayv1 "github.com/apollo-chora/chora-sharing/internal/adapter/clients/gatewayv1"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
@@ -96,7 +96,12 @@ func (c *QuizGenClient) GenerateQuizQuestions(ctx context.Context, instructorGCI
 			rc, resp.GetRawFinishReason())
 	}
 
-	questions, err := parseQuizQuestions(responseText(resp), runID)
+	answer, err := answerText(resp)
+	if err != nil {
+		return nil, fmt.Errorf("quizgen answer: %w", err)
+	}
+
+	questions, err := parseQuizQuestions(answer, runID)
 	if err != nil {
 		return nil, fmt.Errorf("quizgen parse: %w", err)
 	}
@@ -110,22 +115,43 @@ func (c *QuizGenClient) GenerateQuizQuestions(ctx context.Context, instructorGCI
 // Invoke RPC has no traceparent field; distributed tracing context travels as
 // the `traceparent` metadata key, which is where the OTel interceptor reads it.
 func withTraceparent(ctx context.Context) context.Context {
+	// AppendToOutgoingContext APPENDS rather than replaces, so a traceparent
+	// already on the outgoing metadata would reach the gateway twice.
+	if md, ok := metadata.FromOutgoingContext(ctx); ok && len(md.Get("traceparent")) > 0 {
+		return ctx
+	}
 	return metadata.AppendToOutgoingContext(ctx, "traceparent", resolveTraceparent(ctx))
 }
 
-// responseText flattens the response's output items into the text the model
-// produced. The gateway returns canonical output items rather than a single
-// completion string.
-func responseText(resp *gatewayv1.InvokeResponse) string {
+// answerText flattens the response's output items into the model's answer.
+//
+// The canonical output admits text, image and refusal parts plus tool calls.
+// Only text is a valid quiz draft. A refusal is the gateway declining to
+// answer, and dropping it silently would parse a truncated answer as a
+// complete one — so anything else is an error rather than something skipped.
+func answerText(resp *gatewayv1.InvokeResponse) (string, error) {
+	if resp == nil {
+		return "", fmt.Errorf("gateway returned no response")
+	}
 	var b strings.Builder
 	for _, item := range resp.GetOutput() {
-		if part := item.GetContent(); part != nil {
-			if text := part.GetText(); text != nil {
-				b.WriteString(text.GetText())
+		part := item.GetContent()
+		if part == nil {
+			if item.GetToolCall() != nil {
+				return "", fmt.Errorf("model emitted a tool call, which is not a quiz draft")
 			}
+			continue
+		}
+		switch {
+		case part.GetText() != nil:
+			b.WriteString(part.GetText().GetText())
+		case part.GetRefusal() != nil:
+			return "", fmt.Errorf("model refused: %s", part.GetRefusal().GetText())
+		default:
+			return "", fmt.Errorf("model emitted a non-text content part, which is not a quiz draft")
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // quizEnvelope mirrors the JSON the QGen crew emits for a LiveQuiz draft.

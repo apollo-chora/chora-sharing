@@ -2,13 +2,14 @@ package clients
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/apollo-chora/chora-sharing/internal/domain/livequiz"
-	gatewayv1 "github.com/apollo-chora/model-gateway/gen/go/gateway/v1"
+	gatewayv1 "github.com/apollo-chora/chora-sharing/internal/adapter/clients/gatewayv1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
@@ -217,6 +218,119 @@ func TestQuizGenClient_GenerateQuizQuestions_ZeroQuestionsReturned(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "0 questions") {
 		t.Errorf("err = %v, want 0 questions error", err)
 	}
+}
+
+// The metadata must be parseable JSON: the gateway decodes metadata_json with
+// orjson, so a malformed payload is rejected before any inference happens.
+func TestQuizGenClient_GenerateQuizQuestions_MetadataIsParseableJSON(t *testing.T) {
+	gw := &fakeModelGatewayClient{invokeResp: quizResponse(validQuestionJSON)}
+	c := NewQuizGenClient(gw)
+	if _, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1); err != nil {
+		t.Fatalf("GenerateQuizQuestions: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(gw.gotReq.GetMetadataJson(), &meta); err != nil {
+		t.Fatalf("metadata_json is not valid JSON: %v (bytes: %q)", err, gw.gotReq.GetMetadataJson())
+	}
+	if meta["crew_kind"] != quizCrewKind {
+		t.Errorf("crew_kind = %v, want %q", meta["crew_kind"], quizCrewKind)
+	}
+}
+
+// A refusal is the gateway declining to answer. Dropping it silently would
+// parse a truncated answer as a complete one.
+func TestQuizGenClient_GenerateQuizQuestions_RefusalIsAnError(t *testing.T) {
+	gw := &fakeModelGatewayClient{invokeResp: &gatewayv1.InvokeResponse{
+		FinishReason: gatewayv1.FinishReason_FINISH_REASON_STOP,
+		Output: []*gatewayv1.OutputItem{{
+			Item: &gatewayv1.OutputItem_Content{Content: &gatewayv1.ContentPart{
+				Part: &gatewayv1.ContentPart_Refusal{Refusal: &gatewayv1.RefusalPart{Text: "not allowed"}},
+			}},
+		}},
+	}}
+	c := NewQuizGenClient(gw)
+	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
+	if err == nil || !strings.Contains(err.Error(), "quizgen answer") {
+		t.Errorf("err = %v, want quizgen answer error", err)
+	}
+}
+
+func TestQuizGenClient_GenerateQuizQuestions_ToolCallIsAnError(t *testing.T) {
+	gw := &fakeModelGatewayClient{invokeResp: &gatewayv1.InvokeResponse{
+		FinishReason: gatewayv1.FinishReason_FINISH_REASON_STOP,
+		Output: []*gatewayv1.OutputItem{{
+			Item: &gatewayv1.OutputItem_ToolCall{ToolCall: &gatewayv1.ToolCall{Name: "lookup"}},
+		}},
+	}}
+	c := NewQuizGenClient(gw)
+	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
+	if err == nil || !strings.Contains(err.Error(), "quizgen answer") {
+		t.Errorf("err = %v, want quizgen answer error", err)
+	}
+}
+
+// No finish reason other than STOP may be treated as a complete answer.
+func TestQuizGenClient_GenerateQuizQuestions_EveryNonStopReasonIsRejected(t *testing.T) {
+	reasons := []gatewayv1.FinishReason{
+		gatewayv1.FinishReason_FINISH_REASON_LENGTH,
+		gatewayv1.FinishReason_FINISH_REASON_TOOL_CALLS,
+		gatewayv1.FinishReason_FINISH_REASON_CONTENT_FILTER,
+		gatewayv1.FinishReason_FINISH_REASON_UNKNOWN,
+		gatewayv1.FinishReason_FINISH_REASON_UNSPECIFIED,
+	}
+	for _, reason := range reasons {
+		t.Run(reason.String(), func(t *testing.T) {
+			gw := &fakeModelGatewayClient{invokeResp: &gatewayv1.InvokeResponse{
+				FinishReason: reason,
+				Output: []*gatewayv1.OutputItem{{
+					Item: &gatewayv1.OutputItem_Content{Content: &gatewayv1.ContentPart{
+						Part: &gatewayv1.ContentPart_Text{Text: &gatewayv1.TextPart{Text: validQuestionJSON}},
+					}},
+				}},
+			}}
+			c := NewQuizGenClient(gw)
+			_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
+			if err == nil || !strings.Contains(err.Error(), "finish_reason") {
+				t.Errorf("reason %v: err = %v, want finish_reason error", reason, err)
+			}
+		})
+	}
+}
+
+// AppendToOutgoingContext appends, so a traceparent already on the outgoing
+// metadata must not be duplicated.
+func TestQuizGenClient_GenerateQuizQuestions_DoesNotDuplicateTraceparent(t *testing.T) {
+	gw := &fakeModelGatewayClient{invokeResp: quizResponse(validQuestionJSON)}
+	c := NewQuizGenClient(gw)
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "traceparent", "00-aaaa-bbbb-01")
+	if _, err := c.GenerateQuizQuestions(ctx, "g", "t", "topic", nil, 1); err != nil {
+		t.Fatalf("GenerateQuizQuestions: %v", err)
+	}
+	if got := gw.gotMD.Get("traceparent"); len(got) != 1 {
+		t.Errorf("traceparent metadata = %v, want exactly one value", got)
+	}
+}
+
+func TestAnswerText(t *testing.T) {
+	t.Run("nil response", func(t *testing.T) {
+		if _, err := answerText(nil); err == nil {
+			t.Fatal("expected an error for a nil response")
+		}
+	})
+	t.Run("concatenates text parts", func(t *testing.T) {
+		resp := &gatewayv1.InvokeResponse{Output: []*gatewayv1.OutputItem{
+			{Item: &gatewayv1.OutputItem_Content{Content: &gatewayv1.ContentPart{
+				Part: &gatewayv1.ContentPart_Text{Text: &gatewayv1.TextPart{Text: "a"}},
+			}}},
+			{Item: &gatewayv1.OutputItem_Content{Content: &gatewayv1.ContentPart{
+				Part: &gatewayv1.ContentPart_Text{Text: &gatewayv1.TextPart{Text: "b"}},
+			}}},
+		}}
+		got, err := answerText(resp)
+		if err != nil || got != "ab" {
+			t.Errorf("answerText = %q, %v; want \"ab\", nil", got, err)
+		}
+	})
 }
 
 func TestParseQuizQuestions(t *testing.T) {
