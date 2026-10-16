@@ -8,22 +8,26 @@ import (
 	"testing"
 
 	"github.com/apollo-chora/chora-sharing/internal/domain/livequiz"
-	modelgatewayv1 "github.com/apollo-chora/chora-contracts/gen/go/chora/services/model_gateway/v1"
+	gatewayv1 "github.com/apollo-chora/model-gateway/gen/go/gateway/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
-// fakeModelGatewayClient implements modelgatewayv1.ModelGatewayServiceClient
-// for QuizGenClient tests. The embedded interface satisfies the unexercised
-// RPCs; Invoke is overridden with scripted behaviour.
+// fakeModelGatewayClient implements gatewayv1.ModelGatewayServiceClient for
+// QuizGenClient tests. The embedded interface satisfies the unexercised RPCs;
+// Invoke is overridden with scripted behaviour.
 type fakeModelGatewayClient struct {
-	modelgatewayv1.ModelGatewayServiceClient
-	invokeResp *modelgatewayv1.InvokeResponse
+	gatewayv1.ModelGatewayServiceClient
+	invokeResp *gatewayv1.InvokeResponse
 	invokeErr  error
-	gotReq     *modelgatewayv1.InvokeRequest
+	gotReq     *gatewayv1.InvokeRequest
+	gotMD      metadata.MD
 }
 
-func (f *fakeModelGatewayClient) Invoke(_ context.Context, in *modelgatewayv1.InvokeRequest, _ ...grpc.CallOption) (*modelgatewayv1.InvokeResponse, error) {
+func (f *fakeModelGatewayClient) Invoke(ctx context.Context, in *gatewayv1.InvokeRequest, _ ...grpc.CallOption) (*gatewayv1.InvokeResponse, error) {
 	f.gotReq = in
+	f.gotMD, _ = metadata.FromOutgoingContext(ctx)
 	if f.invokeErr != nil {
 		return nil, f.invokeErr
 	}
@@ -32,23 +36,46 @@ func (f *fakeModelGatewayClient) Invoke(_ context.Context, in *modelgatewayv1.In
 
 const validQuestionJSON = `[{"atom_id":"a1","atom_revision_id":"r1","stem":"What is 2+2?","options":["3","4","5","6"],"correct_option_id":"4","timer_seconds":30,"points":10}]`
 
+// quizResponse builds a successful response carrying `text` as the model's
+// answer. The gateway returns canonical output items, not a completion string.
+func quizResponse(text string) *gatewayv1.InvokeResponse {
+	return &gatewayv1.InvokeResponse{
+		FinishReason: gatewayv1.FinishReason_FINISH_REASON_STOP,
+		Output: []*gatewayv1.OutputItem{{
+			Item: &gatewayv1.OutputItem_Content{Content: &gatewayv1.ContentPart{
+				Part: &gatewayv1.ContentPart_Text{Text: &gatewayv1.TextPart{Text: text}},
+			}},
+		}},
+	}
+}
+
+// userText returns the text of the request's first user message.
+func userText(t *testing.T, req *gatewayv1.InvokeRequest) string {
+	t.Helper()
+	if len(req.GetMessages()) != 1 {
+		t.Fatalf("messages len = %d, want 1", len(req.GetMessages()))
+	}
+	msg := req.GetMessages()[0]
+	if msg.GetRole() != gatewayv1.Role_ROLE_USER {
+		t.Errorf("role = %v, want ROLE_USER", msg.GetRole())
+	}
+	if len(msg.GetContent()) != 1 {
+		t.Fatalf("content len = %d, want 1", len(msg.GetContent()))
+	}
+	return msg.GetContent()[0].GetText().GetText()
+}
+
 func TestNewQuizGenClient(t *testing.T) {
 	gw := &fakeModelGatewayClient{}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw)
 	if c == nil {
 		t.Fatal("NewQuizGenClient returned nil")
-	}
-	if c.modelID != "gemini-2.5-flash" {
-		t.Errorf("modelID = %q, want gemini-2.5-flash", c.modelID)
 	}
 }
 
 func TestQuizGenClient_GenerateQuizQuestions_HappyPath(t *testing.T) {
-	gw := &fakeModelGatewayClient{invokeResp: &modelgatewayv1.InvokeResponse{
-		Completion:   validQuestionJSON,
-		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
-	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	gw := &fakeModelGatewayClient{invokeResp: quizResponse(validQuestionJSON)}
+	c := NewQuizGenClient(gw)
 
 	qs, err := c.GenerateQuizQuestions(context.Background(), "gcid-instr", "tenant-x", "Probability", []string{"bayes", "poker"}, 2)
 	if err != nil {
@@ -60,6 +87,7 @@ func TestQuizGenClient_GenerateQuizQuestions_HappyPath(t *testing.T) {
 	if qs[0].AtomID != "a1" || qs[0].Stem != "What is 2+2?" || qs[0].CorrectOptionID != "4" {
 		t.Errorf("question = %+v, want seeded a1 question", qs[0])
 	}
+
 	// Request plumbing: agent_id + scoping + prompt carrying count/tags.
 	req := gw.gotReq
 	if req.GetAgentId() != quizAgentID {
@@ -68,17 +96,20 @@ func TestQuizGenClient_GenerateQuizQuestions_HappyPath(t *testing.T) {
 	if req.GetTenantId() != "tenant-x" || req.GetGcid() != "gcid-instr" {
 		t.Errorf("scoping = tenant:%q gcid:%q, want tenant-x/gcid-instr", req.GetTenantId(), req.GetGcid())
 	}
-	if req.GetLogicalModelId() != "gemini-2.5-flash" {
-		t.Errorf("LogicalModelId = %q, want gemini-2.5-flash", req.GetLogicalModelId())
+	// The gateway resolves the operation from the RPC method, so the caller
+	// sends no model ID.
+	if req.GetModel() != "" {
+		t.Errorf("Model = %q, want empty (the operation's own routes serve it)", req.GetModel())
 	}
-	if req.GetCrewKind() != "qgen" {
-		t.Errorf("CrewKind = %q, want qgen", req.GetCrewKind())
+	// crew_kind has no Invoke field; it rides in metadata_json.
+	if !strings.Contains(string(req.GetMetadataJson()), `"crew_kind":"qgen"`) {
+		t.Errorf("MetadataJson = %q, want crew_kind qgen", req.GetMetadataJson())
 	}
-	if !strings.Contains(req.GetPrompt(), "exactly 2 LiveQuiz questions") || !strings.Contains(req.GetPrompt(), "bayes, poker") {
-		t.Errorf("prompt = %q, want count + tags embedded", req.GetPrompt())
+	if prompt := userText(t, req); !strings.Contains(prompt, "exactly 2 LiveQuiz questions") || !strings.Contains(prompt, "bayes, poker") {
+		t.Errorf("prompt = %q, want count + tags embedded", prompt)
 	}
-	if req.GetSystemPrompt() != quizSystemPrompt {
-		t.Error("SystemPrompt does not match quizSystemPrompt")
+	if req.GetSystemInstruction() != quizSystemPrompt {
+		t.Error("SystemInstruction does not match quizSystemPrompt")
 	}
 	if req.GetInvocationId() == "" {
 		t.Error("InvocationId empty, want a run id")
@@ -86,32 +117,28 @@ func TestQuizGenClient_GenerateQuizQuestions_HappyPath(t *testing.T) {
 }
 
 func TestQuizGenClient_GenerateQuizQuestions_ForwardsTraceparent(t *testing.T) {
-	gw := &fakeModelGatewayClient{invokeResp: &modelgatewayv1.InvokeResponse{
-		Completion:   validQuestionJSON,
-		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
-	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	gw := &fakeModelGatewayClient{invokeResp: quizResponse(validQuestionJSON)}
+	c := NewQuizGenClient(gw)
 	ctx := WithTraceparent(context.Background(), "00-11112222333344445555666677778888-9999aaaabbbbcccc-01")
 	if _, err := c.GenerateQuizQuestions(ctx, "g", "t", "topic", nil, 1); err != nil {
 		t.Fatalf("GenerateQuizQuestions: %v", err)
 	}
-	if tp := gw.gotReq.GetTraceparent(); tp != "00-11112222333344445555666677778888-9999aaaabbbbcccc-01" {
-		t.Errorf("Traceparent = %q, want caller-supplied value", tp)
+	// The Invoke RPC has no traceparent field; it travels as gRPC metadata.
+	if got := gw.gotMD.Get("traceparent"); len(got) != 1 || got[0] != "00-11112222333344445555666677778888-9999aaaabbbbcccc-01" {
+		t.Errorf("traceparent metadata = %v, want caller-supplied value", got)
 	}
 }
 
 func TestQuizGenClient_GenerateQuizQuestions_MintsTraceparentWhenAbsent(t *testing.T) {
-	gw := &fakeModelGatewayClient{invokeResp: &modelgatewayv1.InvokeResponse{
-		Completion:   validQuestionJSON,
-		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
-	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	gw := &fakeModelGatewayClient{invokeResp: quizResponse(validQuestionJSON)}
+	c := NewQuizGenClient(gw)
 	if _, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1); err != nil {
 		t.Fatalf("GenerateQuizQuestions: %v", err)
 	}
 	re := regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-01$`)
-	if !re.MatchString(gw.gotReq.GetTraceparent()) {
-		t.Errorf("Traceparent = %q, want W3C format", gw.gotReq.GetTraceparent())
+	got := gw.gotMD.Get("traceparent")
+	if len(got) != 1 || !re.MatchString(got[0]) {
+		t.Errorf("traceparent metadata = %v, want one W3C value", got)
 	}
 }
 
@@ -120,14 +147,14 @@ func TestQuizGenClient_GenerateQuizQuestions_NotConfigured(t *testing.T) {
 	if _, err := nilC.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1); !errors.Is(err, livequiz.ErrQuizGeneratorNotConfigured) {
 		t.Errorf("nil receiver: err = %v, want ErrQuizGeneratorNotConfigured", err)
 	}
-	c := NewQuizGenClient(nil, "gemini-2.5-flash")
+	c := NewQuizGenClient(nil)
 	if _, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1); !errors.Is(err, livequiz.ErrQuizGeneratorNotConfigured) {
 		t.Errorf("nil gateway: err = %v, want ErrQuizGeneratorNotConfigured", err)
 	}
 }
 
 func TestQuizGenClient_GenerateQuizQuestions_InvalidArgs(t *testing.T) {
-	c := NewQuizGenClient(&fakeModelGatewayClient{}, "gemini-2.5-flash")
+	c := NewQuizGenClient(&fakeModelGatewayClient{})
 	cases := []struct {
 		name       string
 		instructor string
@@ -150,20 +177,24 @@ func TestQuizGenClient_GenerateQuizQuestions_InvalidArgs(t *testing.T) {
 
 func TestQuizGenClient_GenerateQuizQuestions_InvokeError(t *testing.T) {
 	gw := &fakeModelGatewayClient{invokeErr: errors.New("gateway down")}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw)
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "quizgen invoke") {
 		t.Errorf("err = %v, want quizgen invoke wrap", err)
 	}
 }
 
-func TestQuizGenClient_GenerateQuizQuestions_NonCompleteFinishReason(t *testing.T) {
-	gw := &fakeModelGatewayClient{invokeResp: &modelgatewayv1.InvokeResponse{
-		Completion:   validQuestionJSON,
-		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_MAX_TOKENS,
-		FinishDetail: "hit ceiling",
+func TestQuizGenClient_GenerateQuizQuestions_NonStopFinishReason(t *testing.T) {
+	gw := &fakeModelGatewayClient{invokeResp: &gatewayv1.InvokeResponse{
+		FinishReason:    gatewayv1.FinishReason_FINISH_REASON_LENGTH,
+		RawFinishReason: proto.String("hit ceiling"),
+		Output: []*gatewayv1.OutputItem{{
+			Item: &gatewayv1.OutputItem_Content{Content: &gatewayv1.ContentPart{
+				Part: &gatewayv1.ContentPart_Text{Text: &gatewayv1.TextPart{Text: validQuestionJSON}},
+			}},
+		}},
 	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	c := NewQuizGenClient(gw)
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "finish_reason") {
 		t.Errorf("err = %v, want finish_reason error", err)
@@ -171,11 +202,8 @@ func TestQuizGenClient_GenerateQuizQuestions_NonCompleteFinishReason(t *testing.
 }
 
 func TestQuizGenClient_GenerateQuizQuestions_EmptyCompletionIsError(t *testing.T) {
-	gw := &fakeModelGatewayClient{invokeResp: &modelgatewayv1.InvokeResponse{
-		Completion:   "",
-		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
-	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	gw := &fakeModelGatewayClient{invokeResp: quizResponse("")}
+	c := NewQuizGenClient(gw)
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "quizgen parse") {
 		t.Errorf("err = %v, want quizgen parse wrap", err)
@@ -183,11 +211,8 @@ func TestQuizGenClient_GenerateQuizQuestions_EmptyCompletionIsError(t *testing.T
 }
 
 func TestQuizGenClient_GenerateQuizQuestions_ZeroQuestionsReturned(t *testing.T) {
-	gw := &fakeModelGatewayClient{invokeResp: &modelgatewayv1.InvokeResponse{
-		Completion:   `[]`,
-		FinishReason: modelgatewayv1.FinishReason_FINISH_REASON_COMPLETE,
-	}}
-	c := NewQuizGenClient(gw, "gemini-2.5-flash")
+	gw := &fakeModelGatewayClient{invokeResp: quizResponse(`[]`)}
+	c := NewQuizGenClient(gw)
 	_, err := c.GenerateQuizQuestions(context.Background(), "g", "t", "topic", nil, 1)
 	if err == nil || !strings.Contains(err.Error(), "0 questions") {
 		t.Errorf("err = %v, want 0 questions error", err)
